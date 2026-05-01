@@ -87,7 +87,7 @@ export async function getCatalogPayload(tenantId: string): Promise<CatalogPayloa
       WHERE "tenantId" = $1 AND "deletedAt" IS NULL AND active = true
       ORDER BY "sortOrder" ASC, name ASC`,
     [tenantId],
-  ) as Promise<CatalogItem[]>;
+  ) as unknown as Promise<CatalogItem[]>;
 
   const modsP = sql(
     `SELECT id, name, "nameLocal",
@@ -97,12 +97,12 @@ export async function getCatalogPayload(tenantId: string): Promise<CatalogPayloa
       WHERE "tenantId" = $1 AND active = true
       ORDER BY "group" ASC, name ASC`,
     [tenantId],
-  ) as Promise<CatalogModifier[]>;
+  ) as unknown as Promise<CatalogModifier[]>;
 
   const freshnessP = sql(
     `SELECT (SELECT MAX("updatedAt") FROM sellable_items WHERE "tenantId" = $1)::text AS "freshness"`,
     [tenantId],
-  ) as Promise<Array<{ freshness: string | null }>>;
+  ) as unknown as Promise<Array<{ freshness: string | null }>>;
 
   const [items, modifiers, freshnessRows] = await Promise.all([itemsP, modsP, freshnessP]);
 

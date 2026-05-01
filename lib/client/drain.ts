@@ -115,7 +115,7 @@ export function drainOnce(): Promise<DrainReport> {
   return drainInFlight.finally(() => {
     drainInFlight = null;
     return countByStatus().then(() => ({ attempted: 0, succeeded: 0, failed: 0, retried: 0 }));
-  }) as Promise<DrainReport>;
+  }) as unknown as Promise<DrainReport>;
 }
 
 /**

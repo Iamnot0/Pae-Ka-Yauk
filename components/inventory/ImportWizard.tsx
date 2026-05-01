@@ -298,7 +298,7 @@ function UploadStep({
           <Sparkles size={14} /> {t('import.autoHint')}
         </div>
         <input
-          ref={fileInputRef}
+          ref={fileInputRef as React.RefObject<HTMLInputElement>}
           type="file"
           accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
           onChange={onFileChange}

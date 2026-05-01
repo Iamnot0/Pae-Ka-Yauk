@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import type { Route } from 'next';
 import { Eye, EyeOff, LogIn, Moon, Sun } from 'lucide-react';
 import { useT, useLocale } from '@/lib/i18n/useT';
 import { useTheme } from '@/lib/theme/useTheme';
@@ -336,7 +337,9 @@ export default function LoginPage() {
       });
       if (res.ok) {
         const from = searchParams.get('from') ?? '/';
-        router.push(from);
+        // Next.js typed-routes flag wraps router.push's argument as RouteImpl<string>;
+        // `from` comes from a query param so it's a plain string at runtime.
+        router.push(from as Route);
         router.refresh();
       } else if (res.status === 401 || res.status === 400) {
         // Only these two mean "your credentials didn't work"

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import type { ComponentType } from 'react';
+import type { Route } from 'next';
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -12,6 +12,7 @@ import {
   BarChart3,
   UsersRound,
   Flame,
+  type LucideIcon,
 } from 'lucide-react';
 import { useT } from '@/lib/i18n/useT';
 import type { DictKey } from '@/lib/i18n/dict';
@@ -22,7 +23,7 @@ import { isPathAllowed } from '@/lib/rbac';
 interface NavItem {
   href: string;
   labelKey: DictKey;
-  Icon: ComponentType<{ size?: number; strokeWidth?: number }>;
+  Icon: LucideIcon;
 }
 
 // Order: workflow-grouped. Stocks → Recipes → Production → Inventory cluster
@@ -64,7 +65,7 @@ export function Sidebar({ role }: SidebarProps) {
             return (
               <li key={href}>
                 <Link
-                  href={href}
+                  href={href as Route}
                   className="nav-item"
                   onClick={close}
                   aria-current={active ? 'page' : undefined}
