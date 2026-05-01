@@ -498,15 +498,26 @@ export async function getSalesKpis(tenantId: string, period: SalesPeriod): Promi
 
   const itemsSold = lineAgg.reduce((acc, r) => acc + r.qty, 0);
 
-  // Cost lookup — null if recipe missing or incomplete.
-  const recipeCosts = await computeRecipeCosts(tenantId);
+  // Cost lookup — recipe-derived first, owner-entered manualCost as fallback.
+  // In POS_PAUSED mode there are no recipes, so manualCost is the only signal.
+  // Mirrors lib/items/cost.ts → resolveDisplayCost precedence: recipe ?? manual.
+  const [recipeCosts, manualCostRows] = await Promise.all([
+    computeRecipeCosts(tenantId),
+    sql(
+      `SELECT id, "manualCost"::float8 AS "manualCost"
+         FROM sellable_items
+        WHERE "tenantId" = $1 AND "manualCost" IS NOT NULL`,
+      [tenantId],
+    ) as unknown as Promise<Array<{ id: string; manualCost: number }>>,
+  ]);
+  const manualCosts = new Map(manualCostRows.map((r) => [r.id, r.manualCost]));
   let cogs = 0;
   let costed = 0;
   let uncosted = 0;
   for (const r of lineAgg) {
-    const rc = recipeCosts[r.itemId];
-    if (rc?.cost != null) {
-      cogs += r.qty * rc.cost;
+    const cost = recipeCosts[r.itemId]?.cost ?? manualCosts.get(r.itemId) ?? null;
+    if (cost != null) {
+      cogs += r.qty * cost;
       costed += 1;
     } else if (r.qty > 0) {
       uncosted += 1;
