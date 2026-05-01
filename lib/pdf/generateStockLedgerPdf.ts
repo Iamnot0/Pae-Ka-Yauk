@@ -215,52 +215,6 @@ export async function generateStockLedgerPdf(input: Input): Promise<void> {
   );
   y += 2;
 
-  // Tender mix
-  if (tx.tenderMix.length > 0) {
-    y = pageBreakIfNeeded(doc, y, 40);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(0);
-    doc.text('Tender mix', 14, y);
-    y += 2;
-    autoTable(doc, {
-      startY: y,
-      head: [['Tender', 'Count', 'Total']],
-      body: tx.tenderMix.map((r) => [r.tenderType, fmtInt(r.count), fmtMmk(r.total)]),
-      theme: 'striped',
-      headStyles: { fillColor: BRAND_BROWN, textColor: 255, fontSize: 9 },
-      bodyStyles: { fontSize: 9 },
-      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
-    y = afterTable(doc) + 6;
-  }
-
-  // Mode mix
-  if (tx.modeMix.length > 0) {
-    y = pageBreakIfNeeded(doc, y, 40);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(0);
-    doc.text('Mode mix', 14, y);
-    y += 2;
-    autoTable(doc, {
-      startY: y,
-      head: [['Mode', 'Count', 'Total']],
-      body: tx.modeMix.map((r) => [
-        r.modeAtCreation === 'POS_PAUSED' ? 'POS only' : 'Full inventory',
-        fmtInt(r.count),
-        fmtMmk(r.total),
-      ]),
-      theme: 'striped',
-      headStyles: { fillColor: BRAND_BROWN, textColor: 255, fontSize: 9 },
-      bodyStyles: { fontSize: 9 },
-      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } },
-      margin: { left: 14, right: 14 },
-    });
-    y = afterTable(doc) + 6;
-  }
-
   // Top items by revenue
   if (tx.topItems.length > 0) {
     y = pageBreakIfNeeded(doc, y, 60);
@@ -330,12 +284,13 @@ export async function generateStockLedgerPdf(input: Input): Promise<void> {
     y += 5;
 
     for (const slip of slips) {
-      y = pageBreakIfNeeded(doc, y, 30);
-      // Slip header line — bold receipt # + date + total.
+      y = pageBreakIfNeeded(doc, y, 36);
+      // Slip header — receipt # · date · tender (no inline total; the
+      // breakdown row at the bottom shows Subtotal · Tax · Delivery · Total).
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.setTextColor(0);
-      const headerLine = `${slip.receiptNumber}  ·  ${formatDateTimeInTz(slip.createdAtIso, TENANT_TZ)}  ·  ${slip.tenderType}  ·  Total ${fmtMmk(slip.total)}`;
+      const headerLine = `${slip.receiptNumber}  ·  ${formatDateTimeInTz(slip.createdAtIso, TENANT_TZ)}  ·  ${slip.tenderType}`;
       doc.text(headerLine, 14, y);
       y += 2;
       // Line items table immediately under the header.
@@ -354,7 +309,19 @@ export async function generateStockLedgerPdf(input: Input): Promise<void> {
         columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' } },
         margin: { left: 18, right: 14 },
       });
-      y = afterTable(doc) + 4;
+      y = afterTable(doc) + 1;
+      // Subtotal · Tax · Delivery · Total breakdown — single right-aligned
+      // line so the figures line up with the table's right edge.
+      const subtotal = slip.lines.reduce((acc, ln) => acc + ln.lineTotal, 0);
+      const breakdown: string[] = [`Subtotal ${fmtMmk(subtotal)}`];
+      if (slip.taxTotal > 0)     breakdown.push(`Tax ${fmtMmk(slip.taxTotal)}`);
+      if (slip.deliveryFee > 0)  breakdown.push(`Delivery ${fmtMmk(slip.deliveryFee)}`);
+      breakdown.push(`Total ${fmtMmk(slip.total)}`);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(80);
+      doc.text(breakdown.join('   ·   '), 196, y, { align: 'right' });
+      y += 6;
     }
   }
 

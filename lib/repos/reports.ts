@@ -76,9 +76,13 @@ export interface SaleLineRow {
   lineTotal: number;
 }
 
-/** Slip-details detail: a sale row with its line items expanded. */
+/** Slip-details detail: a sale row with its line items expanded. Adds the
+ *  per-slip tax + delivery so the PDF can render a proper Subtotal · Tax ·
+ *  Delivery · Total breakdown under each receipt header. */
 export interface SaleWithLines extends SaleRow {
   lines: SaleLineRow[];
+  taxTotal: number;
+  deliveryFee: number;
 }
 
 export interface TransactionsReport {
@@ -179,6 +183,8 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
               -- Hand back UTC ISO; client renders via Intl.DateTimeFormat()
               (st."createdAt" AT TIME ZONE 'UTC')::text AS "createdAtIso",
               st.total::float8        AS total,
+              st."taxTotal"::float8   AS "taxTotal",
+              st."deliveryFee"::float8 AS "deliveryFee",
               st."tenderType"::text   AS "tenderType",
               st.status::text         AS status,
               (SELECT COUNT(*)::int FROM sale_lines WHERE "saleId" = st.id) AS "itemCount"
@@ -187,7 +193,7 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
        ORDER BY st."createdAt" DESC
        LIMIT 200`,
       [tenantId]
-    ) as unknown as Promise<SaleRow[]>,
+    ) as unknown as Promise<Array<SaleRow & { taxTotal: number; deliveryFee: number }>>,
 
     // Line items for the most recent 50 completed sales — drives the
     // Slip Details PDF section. Capped at 50 to keep the PDF a sane size
@@ -223,7 +229,12 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
   const salesWithLines: SaleWithLines[] = recentSales
     .filter((s) => s.status === 'COMPLETED' && linesBySale.has(s.id))
     .slice(0, 50)
-    .map((s) => ({ ...s, lines: linesBySale.get(s.id) ?? [] }));
+    .map((s) => ({
+      ...s,
+      lines: linesBySale.get(s.id) ?? [],
+      taxTotal: s.taxTotal ?? 0,
+      deliveryFee: s.deliveryFee ?? 0,
+    }));
 
   const s = summaryRows[0] ?? { revenue: 0, saleCount: 0, voidCount: 0, taxTotal: 0, deliveryFeeTotal: 0 };
   return {
