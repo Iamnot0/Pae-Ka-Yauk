@@ -1,0 +1,772 @@
+// ============================================================================
+// Pae Ka Yauk POS — Prisma schema v1
+//
+// Multi-tenant from day 1:
+//   - `tenantId` on every domain table (shop/business scope)
+//   - `@@index([tenantId])` + `@@unique([tenantId, ...])` everywhere
+//   - One tenant for Phase 1 (Pae Ka Yauk). Tenants 2+ added in Phase 2.
+//
+// Conventions:
+//   - camelCase field names
+//   - Decimal for money & quantities (never Float)
+//   - ULID ids for rows that can originate offline (sale, movement, waste)
+//   - cuid() for admin/metadata rows
+//   - Soft delete via `deletedAt` on user-facing entities
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// TENANT (shopping-mall "apartment")
+// ============================================================================
+
+model Tenant {
+  id           String       @id @default(cuid())
+  slug         String       @unique                  // "pae-ka-yauk"
+  name         String                                 // "Pae Ka Yauk"
+  nameLocal    String?                                // "ပဲကရောက်"
+  status       TenantStatus @default(ACTIVE)
+
+  // Locale — each tenant picks their own
+  currency     String       @default("MMK")
+  locale       String       @default("my-MM")
+  timezone     String       @default("Asia/Yangon")
+
+  // Receipt header (printed on every receipt)
+  addressLine1 String?
+  addressLine2 String?
+  phone        String?
+  taxId        String?                                // MMK GDT / business registration
+
+  // Per-tenant branding — surfaced in <Header /> via app/(app)/layout.tsx.
+  // No upload UI yet; populated by manual SQL until /settings/branding ships.
+  logoUrl      String?
+
+  // Inventory mode — PAUSED skips BOM deduction at sale time; FULL runs full ledger.
+  // Flip via SQL: UPDATE tenants SET "inventoryMode" = 'FULL'. No redeploy needed.
+  inventoryMode String      @default("POS_PAUSED")
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  users             User[]
+  outlets           Outlet[]
+  rawMaterials      RawMaterial[]
+  sellableItems     SellableItem[]
+  modifiers         Modifier[]
+  recipes           Recipe[]
+  unitConversions   UnitConversion[]
+  stockBatches      StockBatch[]
+  stockMovements    StockMovement[]
+  sales             SaleTransaction[]
+  shifts            Shift[]
+  wasteEntries      WasteEntry[]
+  stockAdjustments  StockAdjustment[]
+  suppliers         Supplier[]
+  productionBatches ProductionBatch[]
+
+  @@map("tenants")
+}
+
+enum TenantStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+  CHURNED
+}
+
+// ============================================================================
+// USERS & AUTH
+// ============================================================================
+
+model User {
+  id          String    @id @default(cuid())
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  email       String
+  passwordHash String
+  pin         String?                                 // 4-digit hashed PIN for POS quick-login
+
+  name        String
+  nameLocal   String?
+  role        Role      @default(CASHIER)
+  active      Boolean   @default(true)
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  shifts      Shift[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+enum Role {
+  OWNER        // full access including tenant settings
+  MANAGER      // reports, inventory, staff, recipes — no billing
+  CASHIER      // POS only
+  BAKER        // KDS + recipe view
+}
+
+// ============================================================================
+// OUTLETS (shop branches — 1 for Pae Ka Yauk; multi in Phase 4)
+// ============================================================================
+
+model Outlet {
+  id         String  @id @default(cuid())
+  tenantId   String
+  tenant     Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name       String
+  nameLocal  String?
+  address    String?
+  timezone   String  @default("Asia/Yangon")
+  active     Boolean @default(true)
+
+  stockBatches   StockBatch[]
+  stockMovements StockMovement[]
+  sales          SaleTransaction[]
+  shifts         Shift[]
+  productionBatches ProductionBatch[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("outlets")
+}
+
+// ============================================================================
+// RAW MATERIALS (ingredients + packaging)
+// ============================================================================
+
+model RawMaterial {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  code        String?                                 // optional SKU/abbr from import ("A", "B", ...)
+  name        String
+  nameLocal   String?                                 // Myanmar name
+
+  category    MaterialCategory
+  storageZone StorageZone      @default(DRY)          // COLD / DRY / SUPPLIES — from prior proposal
+  baseUnit    Unit                                    // canonical unit for stock ledger
+  trackBy     TrackingMode     @default(WEIGHT)       // WEIGHT / COUNT
+
+  // BOM participation — colors/flavors/packaging are REPLENISH_ONLY
+  replenishOnly Boolean @default(false)               // true = NOT deducted via recipes
+
+  // Expiry + FIFO
+  tracksExpiry   Boolean @default(false)              // cold storage: YES; dry: usually NO
+  enforceFifo    Boolean @default(false)              // oldest-batch-first on deduction
+
+  // Par level (low-stock alert)
+  parLevel    Decimal? @db.Decimal(12, 4)
+
+  // Last known unit cost (for valuation fallback)
+  lastUnitCost Decimal? @db.Decimal(14, 4)
+
+  notes       String?
+  active      Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  ingredients    RecipeIngredient[]
+  stockBatches   StockBatch[]
+  stockMovements StockMovement[]
+  wasteEntries   WasteEntry[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, category])
+  @@index([tenantId, storageZone])
+  @@map("raw_materials")
+}
+
+enum MaterialCategory {
+  FLOUR_LEAVENING    // Flours, yeast, baking powder, SP
+  FAT_OIL            // Margarine, shortening, oil
+  DAIRY              // Milk, cream, cheese, eggs
+  SWEETENER          // Sugar, icing sugar
+  FRUIT_FILLING      // Jams, pastes, fruits
+  CHOCOLATE_NUT      // Chocolate, cashew, raisin
+  PROTEIN_SAVORY     // Chicken, sausage, ham
+  SAUCE_SEASONING    // Sauces, garlic, onion, pepper
+  COLOR_FLAVOR       // Food colors, flavors (REPLENISH_ONLY)
+  BEVERAGE_BASE      // Coffee beans, tea, syrups
+  PACKAGING          // Plastic, tape, cups (REPLENISH_ONLY)
+  OTHER
+}
+
+enum StorageZone {
+  COLD       // Fridge/freezer — expiry critical, FIFO enforced
+  DRY        // Dry store — par-level based
+  SUPPLIES   // Packaging, tape — count based, replenish-only
+}
+
+enum TrackingMode {
+  WEIGHT     // grams/kg/ml/liters (Decimal precision matters)
+  COUNT      // pieces, boxes, cartons (integer-friendly)
+}
+
+enum Unit {
+  // Weight
+  G
+  KG
+  // Volume
+  ML
+  L
+  // Count
+  PCS
+  BOX
+  CUP
+  PACK
+  CARTON
+  BOTTLE
+  CAN
+}
+
+// ============================================================================
+// UNIT CONVERSION
+// Example: 1 KG flour = 1000 G; 1 KG flour (this material) = 1200 ML volume
+// ============================================================================
+
+model UnitConversion {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  materialId String?                                  // null = tenant-wide (G↔KG); set = material-specific (kg↔ml density)
+  fromUnit   Unit
+  toUnit     Unit
+  factor     Decimal  @db.Decimal(16, 8)              // factor to multiply: from × factor = to
+
+  @@unique([tenantId, materialId, fromUnit, toUnit])
+  @@index([tenantId])
+  @@map("unit_conversions")
+}
+
+// ============================================================================
+// SELLABLE ITEMS (menu) + MODIFIERS
+// ============================================================================
+
+model SellableItem {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  sku         String?                                 // scannable barcode if used
+  name        String
+  nameLocal   String?
+
+  category    ItemCategory
+  price       Decimal  @db.Decimal(12, 2)             // in tenant currency (MMK has no fractional, store int-like)
+  taxRate     Decimal  @db.Decimal(5, 4) @default(0)  // 0.05 = 5% (GST/VAT); 0 = no tax
+
+  imageUrl    String?
+  description String?
+
+  // Production model — DIRECT (ingredients deduct at sale time; drinks) vs
+  // BATCH (ingredients deduct at bake time, finished goods counted; bread/cakes)
+  productionMode      ProductionMode @default(DIRECT)
+  finishedGoodsOnHand Decimal        @db.Decimal(14, 4) @default(0)
+  // Display-only metadata: e.g. "Soft Roll" sold by pack with 6 pcs inside.
+  // Stock math is unaffected — recipes still use yieldUnit (PCS, BOX, etc.).
+  // Filled by CSV importer; null when item isn't sold by pack.
+  piecesPerPack       Int?
+  // Per-finished-good shelf life in days. NULL = no expiry tracking.
+  // Drives the dashboard "Stocks expiring ≤ 7 days" KPI by joining the
+  // latest production batch with createdAt + shelfLifeDays * INTERVAL '1 day'.
+  shelfLifeDays       Int?
+  // Owner-entered cost per piece (used in PAUSED mode; fallback in FULL mode).
+  manualCost          Decimal? @db.Decimal(14, 2)
+
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  recipes          Recipe[]
+  modifiers        ItemModifier[]
+  saleLines        SaleLine[]
+  productionBatches ProductionBatch[]
+  stockAdjustments StockAdjustment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([tenantId, category, active])
+  @@map("sellable_items")
+}
+
+enum ProductionMode {
+  DIRECT   // Deduct ingredients live per sale (coffee, drinks)
+  BATCH    // Deduct ingredients at bake; sales consume finished goods (bread, cakes)
+}
+
+model ProductionBatch {
+  id             String        @id                         // ULID
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  outletId       String?
+  outlet         Outlet?       @relation(fields: [outletId], references: [id])
+
+  itemId         String
+  item           SellableItem  @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  recipeId       String?
+  recipeVersion  Int?
+  // Source of this batch: BAKED (normal production run) or RECEIVED (owner receive-stocks flow)
+  source         String        @default("BAKED")
+
+  batchCount     Decimal       @db.Decimal(10, 4)          // how many recipe-multiples
+  expectedYield  Decimal       @db.Decimal(14, 4)
+  actualYield    Decimal       @db.Decimal(14, 4)
+
+  createdAt      DateTime      @default(now())
+  createdBy      String?                                    // User.id
+  notes          String?
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, itemId])
+  @@map("production_batches")
+}
+
+enum ItemCategory {
+  BAKERY_BREAD
+  BAKERY_CAKE
+  BAKERY_COOKIES
+  BAKERY_PASTRY
+  BAKERY_SAVORY
+  COFFEE_HOT
+  COFFEE_COLD
+  TEA
+  COLD_DRINK
+  DESSERT
+  OTHER
+}
+
+model Modifier {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String                                  // "Extra Shot"
+  nameLocal   String?
+  group       String                                  // "Size" / "Milk" / "Add-on"
+  priceDelta  Decimal  @db.Decimal(12, 2)             // +1000 MMK, or 0, or -500
+
+  active      Boolean  @default(true)
+
+  items       ItemModifier[]
+
+  @@unique([tenantId, group, name])
+  @@index([tenantId])
+  @@map("modifiers")
+}
+
+model ItemModifier {
+  id          String       @id @default(cuid())
+  itemId      String
+  item        SellableItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  modifierId  String
+  modifier    Modifier     @relation(fields: [modifierId], references: [id], onDelete: Cascade)
+  required    Boolean      @default(false)
+
+  @@unique([itemId, modifierId])
+  @@map("item_modifiers")
+}
+
+// ============================================================================
+// RECIPES (BOM) + INGREDIENTS
+// ============================================================================
+
+model Recipe {
+  id          String       @id @default(cuid())
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  itemId      String
+  item        SellableItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  version     Int          @default(1)                // recipe versioning — past sales use their recipe version
+  activeFrom  DateTime     @default(now())
+  activeTo    DateTime?
+
+  yield       Decimal      @db.Decimal(12, 4)         // recipe produces N units
+  yieldUnit   Unit
+  wasteFactor Decimal      @db.Decimal(5, 4) @default(0)  // 0.05 = 5% trim/loss expected
+
+  notes       String?
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  ingredients RecipeIngredient[]
+  usedIn      RecipeIngredient[] @relation("SubRecipe")
+
+  @@index([tenantId])
+  @@index([tenantId, itemId, activeFrom])
+  @@map("recipes")
+}
+
+model RecipeIngredient {
+  id          String       @id @default(cuid())
+  recipeId    String
+  recipe      Recipe       @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  // EITHER material OR sub-recipe (enforce in application code; one must be non-null)
+  materialId  String?
+  material    RawMaterial? @relation(fields: [materialId], references: [id])
+  subRecipeId String?
+  subRecipe   Recipe?      @relation("SubRecipe", fields: [subRecipeId], references: [id])
+
+  quantity    Decimal      @db.Decimal(14, 4)
+  unit        Unit
+  note        String?
+  sortOrder   Int          @default(0)
+
+  @@index([recipeId])
+  @@map("recipe_ingredients")
+}
+
+// ============================================================================
+// SUPPLIERS
+// ============================================================================
+
+model Supplier {
+  id         String   @id @default(cuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name       String
+  phone      String?
+  email      String?
+  address    String?
+  notes      String?
+  active     Boolean  @default(true)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  stockBatches StockBatch[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+// ============================================================================
+// STOCK — batches + movements (append-only ledger)
+// ============================================================================
+
+model StockBatch {
+  id          String       @id @default(cuid())
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  outletId    String?
+  outlet      Outlet?      @relation(fields: [outletId], references: [id])
+
+  materialId  String
+  material    RawMaterial  @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  supplierId  String?
+  supplier    Supplier?    @relation(fields: [supplierId], references: [id])
+
+  receivedAt  DateTime     @default(now())
+  expiryDate  DateTime?                                // required if material.tracksExpiry
+  unitCost    Decimal      @db.Decimal(14, 4)
+  receivedQty Decimal      @db.Decimal(14, 4)          // original qty in baseUnit
+  remainingQty Decimal     @db.Decimal(14, 4)          // computed from movements — for query speed
+
+  invoiceRef  String?
+
+  @@index([tenantId, materialId, receivedAt])
+  @@index([tenantId, expiryDate])
+  @@map("stock_batches")
+}
+
+model StockMovement {
+  // ULID — time-sortable, safe for offline generation
+  id          String       @id                         // ULID
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  outletId    String?
+  outlet      Outlet?      @relation(fields: [outletId], references: [id])
+
+  materialId  String
+  material    RawMaterial  @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  batchId     String?                                   // when IN: the batch created; when OUT: the batch consumed
+
+  kind        MovementKind
+  reason      MovementReason
+  qty         Decimal      @db.Decimal(14, 4)           // positive for IN, negative for OUT/WASTE
+  unit        Unit
+
+  saleId      String?                                   // link to SaleTransaction when reason=SALE
+  saleLineId  String?
+  wasteId     String?                                   // link to WasteEntry
+  productionBatchId String?                             // link to ProductionBatch when reason=PRODUCTION_*
+  userId      String?                                   // who performed
+
+  createdAt   DateTime     @default(now())
+  note        String?
+
+  @@index([tenantId, materialId, createdAt])
+  @@index([tenantId, saleId])
+  @@index([tenantId, reason, createdAt])
+  @@index([productionBatchId])
+  @@map("stock_movements")
+}
+
+enum MovementKind {
+  IN
+  OUT
+  ADJUSTMENT
+}
+
+enum MovementReason {
+  PURCHASE        // IN
+  RETURN_TO_SUPPLIER // OUT
+  TRANSFER_IN     // IN (between outlets)
+  TRANSFER_OUT    // OUT (between outlets)
+  SALE            // OUT — triggered by SaleTransaction via recipe deduction
+  WASTE           // OUT — see WasteEntry for reason code
+  COUNT_CORRECTION // ADJUSTMENT — reconciles physical count vs ledger
+  OPENING_BALANCE // IN — initial stock seed from import
+  PRODUCTION_CONSUME // OUT — raw materials used in a bake/production batch
+  PRODUCTION_OUTPUT  // IN  — finished goods produced by a bake (credited to SellableItem.finishedGoodsOnHand)
+}
+
+// ============================================================================
+// WASTE with reason codes (the client's #1 ask)
+// ============================================================================
+
+model WasteEntry {
+  id          String       @id                          // ULID
+  tenantId    String
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  materialId  String
+  material    RawMaterial  @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  qty         Decimal      @db.Decimal(14, 4)
+  unit        Unit
+  unitCost    Decimal?     @db.Decimal(14, 4)           // snapshot at waste time
+  totalCost   Decimal?     @db.Decimal(14, 2)
+
+  reason      WasteReason
+  note        String?
+
+  userId      String?
+  createdAt   DateTime     @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, reason, createdAt])
+  @@map("waste_entries")
+}
+
+enum WasteReason {
+  SPOILED           // past expiry, unsellable — COGS (spoilage)
+  OVERPRODUCTION    // baked too many — COGS (overproduction) — biggest bakery leak
+  STAFF_MEAL        // eaten by staff — Staff benefits (NOT COGS)
+  TESTING           // R&D — Marketing/R&D
+  CUSTOMER_RETURN   // bad quality — COGS (quality)
+  BREAKAGE          // dropped, contaminated — COGS (loss)
+  THEFT             // confirmed missing — Shrinkage (separate line)
+  OTHER
+}
+
+// Manual finished-goods adjustments — drives the DMG/FOC columns on the
+// /stocks page. See prisma/migrations/2026-04-25-stock-adjustments.sql.
+model StockAdjustment {
+  id        String                  @id                       // ULID
+  tenantId  String
+  tenant    Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  itemId    String
+  item      SellableItem            @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  qty       Int                     // always positive; the category implies direction (decrement)
+  category  StockAdjustmentCategory
+  reason    String?
+  note      String?
+
+  userId    String?
+  createdAt DateTime                @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, itemId, category])
+  @@map("stock_adjustments")
+}
+
+enum StockAdjustmentCategory {
+  DAMAGED   // physically damaged — burnt, dropped, mouldy
+  FOC       // free of charge — comp, promo, staff giveaway
+  SPOILED   // past shelf life
+  OTHER
+}
+
+// ============================================================================
+// SALES — offline-capable, ULID-keyed, append-only
+// ============================================================================
+
+model SaleTransaction {
+  // ULID — client-generated, time-sortable, safe for offline
+  id             String         @id
+  tenantId       String
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  outletId       String?
+  outlet         Outlet?        @relation(fields: [outletId], references: [id])
+
+  shiftId        String?
+  shift          Shift?         @relation(fields: [shiftId], references: [id])
+
+  // Receipt numbering — device-prefixed sequential (e.g., "T1-0142")
+  deviceId       String                                  // "tablet-01"
+  receiptNumber  String                                  // "T1-0142"
+
+  cashierId      String?                                 // User.id
+
+  subtotal       Decimal        @db.Decimal(14, 2)
+  taxTotal       Decimal        @db.Decimal(14, 2)       @default(0)
+  discountTotal  Decimal        @db.Decimal(14, 2)       @default(0)
+  deliveryFee    Decimal        @db.Decimal(14, 2)       @default(0)
+  total          Decimal        @db.Decimal(14, 2)
+
+  tenderType     TenderType
+  tenderDetails  Json?                                   // split tender, card ref, change given
+  amountTendered Decimal?       @db.Decimal(14, 2)
+  changeGiven    Decimal?       @db.Decimal(14, 2)
+
+  status         SaleStatus     @default(COMPLETED)
+  voidReason     String?
+
+  // Audit trail: which inventory mode was active when the sale was rung
+  modeAtCreation String?
+
+  // Timestamps
+  createdAt      DateTime                                // client wall-clock — PRESERVED
+  serverReceivedAt DateTime     @default(now())          // server-side audit
+
+  lines          SaleLine[]
+
+  // receiptNumber uniqueness is now enforced via the expression-based
+  // index `sale_transactions_daily_receipt` on (tenantId, salesDate-in-Yangon,
+  // receiptNumber) — see prisma/migrations/2026-04-26-daily-receipt-reset.sql.
+  // Prisma can't model expression indexes, so we just leave them in SQL.
+  @@index([tenantId, createdAt])
+  @@index([tenantId, shiftId])
+  @@index([tenantId, status, createdAt])
+  @@map("sale_transactions")
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+  REFUNDED
+  PARTIAL_REFUNDED
+}
+
+enum TenderType {
+  CASH
+  CARD
+  MOBILE_MONEY
+  BANK_TRANSFER
+  SPLIT
+  CREDIT           // customer tab (rare for café)
+}
+
+model SaleLine {
+  id             String          @id                     // ULID
+  saleId         String
+  sale           SaleTransaction @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  itemId         String
+  item           SellableItem    @relation(fields: [itemId], references: [id])
+
+  itemNameSnapshot String                                // freeze the name — even if item renamed later
+  qty            Decimal         @db.Decimal(10, 4)
+  unitPrice      Decimal         @db.Decimal(14, 2)      // PRICE FROZEN AT RING TIME — never looked up on sync
+  modifierDeltas Decimal         @db.Decimal(14, 2)      @default(0)
+  lineTotal      Decimal         @db.Decimal(14, 2)
+
+  modifiersSnapshot Json?                                // [{name, priceDelta, qty}]
+  notes          String?
+
+  // recipe version used for BOM deduction (for auditability)
+  recipeVersion  Int?
+
+  sortOrder      Int             @default(0)
+
+  @@index([saleId])
+  @@map("sale_lines")
+}
+
+// ============================================================================
+// SHIFTS
+// ============================================================================
+
+model Shift {
+  id             String     @id                          // ULID
+  tenantId       String
+  tenant         Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  outletId       String?
+  outlet         Outlet?    @relation(fields: [outletId], references: [id])
+
+  userId         String
+  user           User       @relation(fields: [userId], references: [id])
+
+  openedAt       DateTime
+  closedAt       DateTime?
+
+  openingFloat   Decimal    @db.Decimal(14, 2)           // cash in drawer at start
+  countedCash    Decimal?   @db.Decimal(14, 2)           // blind count at close
+  expectedCash   Decimal?   @db.Decimal(14, 2)           // computed = float + cash sales
+  cashVariance   Decimal?   @db.Decimal(14, 2)           // counted - expected
+
+  totalSales     Decimal?   @db.Decimal(14, 2)
+  totalTax       Decimal?   @db.Decimal(14, 2)
+  totalDiscount  Decimal?   @db.Decimal(14, 2)
+  saleCount      Int?
+
+  notes          String?
+  pdfUrl         String?                                 // archived shift-close PDF
+
+  sales          SaleTransaction[]
+
+  @@index([tenantId, openedAt])
+  @@map("shifts")
+}
+
+// ============================================================================
+// ADJUSTMENT REASON — used for /api/stocks/adjust idempotency + Receive Stocks
+// Note: Postgres column is text (StockAdjustment.reason String?), not a DB enum.
+// This enum lives here as a type-safety reference for application code.
+// ============================================================================
+
+enum AdjustmentReason {
+  DMG
+  FOC
+  RECEIVED
+}
