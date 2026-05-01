@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter, Playfair_Display, Padauk, JetBrains_Mono } from 'next/font/google';
 import { cookies } from 'next/headers';
+import { Analytics } from '@vercel/analytics/next';
 import { LocaleProvider } from '@/lib/i18n/useT';
 import { ThemeProvider, RESOLVED_COOKIE } from '@/lib/theme/useTheme';
 import { ServiceWorkerRegister } from '@/components/global/ServiceWorkerRegister';
@@ -108,6 +109,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <LocaleProvider initial="my">{children}</LocaleProvider>
         </ThemeProvider>
         <ServiceWorkerRegister />
+        <Analytics />
       </body>
     </html>
   );
