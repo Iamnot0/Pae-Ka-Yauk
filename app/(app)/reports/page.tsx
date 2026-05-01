@@ -25,23 +25,31 @@ export default async function ReportsPage({
   const user = await requireUser();
 
   const [transactions, stockActivity, inventory, brand] = await Promise.all([
-    getTransactionsReport(user.tenantId, period).catch(() => ({
-      summary: { revenue: 0, saleCount: 0, avgSale: 0, voidCount: 0, taxTotal: 0, deliveryFeeTotal: 0 },
-      dailyRevenue: [],
-      topItems: [],
-      tenderMix: [],
-      modeMix: [],
-      recentSales: [],
-      salesWithLines: [],
-    })),
-    getStockActivityReport(user.tenantId, period).catch(() => ({
-      summary: { receivedEvents: 0, receivedQty: 0, bakedEvents: 0, bakedQty: 0, soldQty: 0, damagedQty: 0, focQty: 0 },
-      dailyActivity: [],
-      topMoved: [],
-      fgByCategory: [],
-      fgOutOfStock: [],
-      adjustments: [],
-    })),
+    getTransactionsReport(user.tenantId, period).catch((err) => {
+      // Log loud — silent zero fallback masked a sale_lines.createdAt typo for
+      // a full day. If the query throws, we want to know in Vercel logs.
+      console.error('[reports] getTransactionsReport failed:', err);
+      return {
+        summary: { revenue: 0, saleCount: 0, avgSale: 0, voidCount: 0, taxTotal: 0, deliveryFeeTotal: 0 },
+        dailyRevenue: [],
+        topItems: [],
+        tenderMix: [],
+        modeMix: [],
+        recentSales: [],
+        salesWithLines: [],
+      };
+    }),
+    getStockActivityReport(user.tenantId, period).catch((err) => {
+      console.error('[reports] getStockActivityReport failed:', err);
+      return {
+        summary: { receivedEvents: 0, receivedQty: 0, bakedEvents: 0, bakedQty: 0, soldQty: 0, damagedQty: 0, focQty: 0 },
+        dailyActivity: [],
+        topMoved: [],
+        fgByCategory: [],
+        fgOutOfStock: [],
+        adjustments: [],
+      };
+    }),
     getInventorySnapshot(user.tenantId).catch(() => ({
       asOf: new Date().toISOString(),
       kpis: { totalMaterials: 0, stockValueMmk: 0, lowStockCount: 0, outOfStockCount: 0, expiringSoonCount: 0 },

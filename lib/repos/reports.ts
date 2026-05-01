@@ -205,7 +205,7 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
          ORDER BY "createdAt" DESC
          LIMIT 50
        )
-       ORDER BY sl."saleId", sl."createdAt" ASC`,
+       ORDER BY sl."saleId", sl."sortOrder" ASC, sl.id ASC`,
       [tenantId]
     ) as unknown as Promise<Array<{ saleId: string } & SaleLineRow>>,
   ]);
