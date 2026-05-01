@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Download, FileText, TrendingUp, Package, AlertTriangle, Clock, ChevronDown, Receipt, Truck, CreditCard, Layers, ChefHat, ShoppingCart, ShieldAlert, Gift } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -261,6 +261,7 @@ export function ReportsView({ period, transactions, stockActivity, inventory, sh
       {canVoid && transactions.recentSales.length > 0 && (
         <RecentSalesAdmin
           rows={transactions.recentSales}
+          slipsWithLines={transactions.salesWithLines}
           onVoid={(r) => setVoidTarget({ id: r.id, receiptNumber: r.receiptNumber, total: r.total })}
         />
       )}
@@ -281,57 +282,145 @@ export function ReportsView({ period, transactions, stockActivity, inventory, sh
  * total + a "Voided" tag instead of the button.
  */
 function RecentSalesAdmin({
-  rows, onVoid,
+  rows, slipsWithLines, onVoid,
 }: {
   rows: TransactionsReport['recentSales'];
+  slipsWithLines: TransactionsReport['salesWithLines'];
   onVoid: (r: TransactionsReport['recentSales'][number]) => void;
 }) {
   const t = useT();
+  // Lookup map for click → modal: matches a clicked row's sale id to its
+  // expanded line items. Sales beyond the 50-newest cap don't have line
+  // items eagerly loaded; the modal renders a soft "details unavailable"
+  // for those — see SlipDetailsModal below.
+  const linesById = useMemo(() => {
+    const m = new Map<string, TransactionsReport['salesWithLines'][number]>();
+    for (const s of slipsWithLines) m.set(s.id, s);
+    return m;
+  }, [slipsWithLines]);
+
+  const [selected, setSelected] = useState<TransactionsReport['recentSales'][number] | null>(null);
+
   return (
-    <section className="card-xl" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-      <SectionHeader icon={Receipt} title={t('rpt.tx.recentSales')} />
-      <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--color-muted-fg)' }}>
-        {t('void.adminHint')}
-      </p>
-      <ReportTable
-        head={[t('rpt.col.receipt'), t('rpt.col.time'), t('rpt.col.items'), t('rpt.col.tender'), t('rpt.col.total'), '']}
-        rows={rows.slice(0, 30).map((r) => {
-          const isVoided = r.status === 'VOIDED';
-          const totalCell = isVoided
-            ? <span style={{ textDecoration: 'line-through', color: 'var(--color-muted-fg)' }}><MMK amount={r.total} /></span>
-            : <MMK amount={r.total} />;
-          const actionCell = isVoided
-            ? <span style={{ fontSize: '0.75rem', color: 'var(--color-destructive)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('void.tag')}</span>
-            : (
-              <button
-                type="button"
-                onClick={() => onVoid(r)}
-                style={{
-                  padding: '4px 10px',
-                  fontSize: '0.75rem',
-                  fontWeight: 500,
-                  background: 'transparent',
-                  border: '1px solid var(--color-destructive)',
-                  color: 'var(--color-destructive)',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer',
-                }}
-              >
-                {t('void.btn')}
-              </button>
-            );
-          return [
-            r.receiptNumber,
-            formatDateTime(r.createdAtIso),
-            r.itemCount,
-            r.tenderType,
-            totalCell,
-            actionCell,
-          ];
-        })}
-        alignRight={[2, 4]}
-      />
-    </section>
+    <CollapsibleSection id="rpt-recent-sales" icon={Receipt} title={t('rpt.tx.recentSales')}>
+      {/* Vertically-scrollable table — keeps the page short on a busy day. */}
+      <div style={{
+        maxHeight: 420,
+        overflowY: 'auto',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+      }}>
+        <ReportTable
+          head={[t('rpt.col.receipt'), t('rpt.col.time'), t('rpt.col.items'), t('rpt.col.tender'), t('rpt.col.total'), '']}
+          rows={rows.map((r) => {
+            const isVoided = r.status === 'VOIDED';
+            const totalCell = isVoided
+              ? <span style={{ textDecoration: 'line-through', color: 'var(--color-muted-fg)' }}><MMK amount={r.total} /></span>
+              : <MMK amount={r.total} />;
+            const actionCell = isVoided
+              ? <span style={{ fontSize: '0.75rem', color: 'var(--color-destructive)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('void.tag')}</span>
+              : (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onVoid(r); }}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '0.75rem',
+                    fontWeight: 500,
+                    background: 'transparent',
+                    border: '1px solid var(--color-destructive)',
+                    color: 'var(--color-destructive)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t('void.btn')}
+                </button>
+              );
+            return [
+              r.receiptNumber,
+              formatDateTime(r.createdAtIso),
+              r.itemCount,
+              r.tenderType,
+              totalCell,
+              actionCell,
+            ];
+          })}
+          alignRight={[2, 4]}
+          onRowClick={(i) => setSelected(rows[i])}
+        />
+      </div>
+
+      {selected && (
+        <SlipDetailsModal
+          slip={selected}
+          lines={linesById.get(selected.id)?.lines ?? null}
+          onClose={() => setSelected(null)}
+        />
+      )}
+    </CollapsibleSection>
+  );
+}
+
+/**
+ * Modal shown when the user clicks a row in Recent Sales. Renders the slip
+ * header + line items table. Older slips (beyond the 50-newest cap that's
+ * eagerly joined with sale_lines) render a soft "details unavailable" hint
+ * — those can still be drilled into via the Slip Details PDF section.
+ */
+function SlipDetailsModal({
+  slip, lines, onClose,
+}: {
+  slip: TransactionsReport['recentSales'][number];
+  lines: TransactionsReport['salesWithLines'][number]['lines'] | null;
+  onClose: () => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      className="modal-overlay"
+    >
+      <div onClick={(e) => e.stopPropagation()} className="modal-card" style={{ maxWidth: 560 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
+          <h3 style={{ margin: 0 }}>{slip.receiptNumber}</h3>
+          <button type="button" onClick={onClose} className="btn btn-ghost btn-sm">×</button>
+        </div>
+        <p style={{ margin: '4px 0 var(--space-3)', fontSize: '0.875rem', color: 'var(--color-muted-fg)' }}>
+          {formatDateTime(slip.createdAtIso)} · {slip.tenderType} · {slip.status}
+        </p>
+
+        {lines && lines.length > 0 ? (
+          <ReportTable
+            head={[t('rpt.col.item'), t('rpt.col.qty'), t('rpt.col.unit'), t('rpt.col.total')]}
+            rows={lines.map((ln) => [
+              ln.name,
+              ln.qty,
+              <MMK amount={ln.unitPrice} key={`up-${ln.name}`} />,
+              <MMK amount={ln.lineTotal} key={`lt-${ln.name}`} />,
+            ])}
+            alignRight={[1, 2, 3]}
+          />
+        ) : (
+          <p style={{ color: 'var(--color-muted-fg)', fontSize: '0.875rem' }}>
+            Line items not loaded — this slip is older than the 50-newest cap. Download the Stock Ledger PDF for full per-slip detail.
+          </p>
+        )}
+
+        <div style={{
+          marginTop: 'var(--space-3)',
+          paddingTop: 'var(--space-2)',
+          borderTop: '1px solid var(--color-border)',
+          display: 'flex', justifyContent: 'space-between',
+          fontWeight: 600,
+        }}>
+          <span>{t('rpt.col.total')}</span>
+          <MMK amount={slip.total} />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -749,24 +838,32 @@ function DrillDown({
                   : tint === 'warning'     ? 'var(--color-warning)'
                   : 'var(--color-foreground)';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: open ? 'var(--space-2)' : 0 }}>
       <button
         type="button"
         onClick={toggle}
         aria-expanded={open}
         aria-controls={`drill-${id}`}
         style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          padding: '6px 0', background: 'transparent', border: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 'var(--space-2)',
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'var(--color-surface-alt)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 'var(--radius-md)',
           textAlign: 'left', cursor: 'pointer', width: '100%',
           color: headColor, fontSize: '0.9375rem', fontWeight: 600,
         }}
       >
-        <ChevronDown
-          size={14} strokeWidth={2}
-          style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform var(--transition-fast)', flexShrink: 0 }}
-        />
         <span>{title}</span>
+        <ChevronDown
+          size={18} strokeWidth={2}
+          style={{
+            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            transition: 'transform var(--transition-fast)',
+            flexShrink: 0, color: 'var(--color-muted-fg)',
+          }}
+        />
       </button>
       {open && (
         <div id={`drill-${id}`}>
@@ -983,14 +1080,18 @@ function KpiTile({ icon: Icon, label, value, tint }: { icon: typeof Download; la
 }
 
 function ReportTable({
-  head, rows, alignRight = [], maxHeight = 320,
+  head, rows, alignRight = [], maxHeight = 320, onRowClick,
 }: {
   head: string[];
   rows: Array<Array<React.ReactNode>>;
   alignRight?: number[];
   maxHeight?: number;
+  /** Optional click handler — when provided, rows render as interactive
+   *  with hover background and pointer cursor. Receives the row index. */
+  onRowClick?: (rowIndex: number) => void;
 }) {
   const rightSet = new Set(alignRight);
+  const clickable = !!onRowClick;
   return (
     <div
       style={{
@@ -1021,7 +1122,17 @@ function ReportTable({
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} style={{ borderBottom: '1px solid var(--color-border-subtle, var(--color-border))' }}>
+            <tr
+              key={ri}
+              onClick={clickable ? () => onRowClick(ri) : undefined}
+              style={{
+                borderBottom: '1px solid var(--color-border-subtle, var(--color-border))',
+                cursor: clickable ? 'pointer' : undefined,
+                transition: clickable ? 'background var(--transition-fast)' : undefined,
+              }}
+              onMouseEnter={clickable ? (e) => { e.currentTarget.style.background = 'var(--color-surface-alt)'; } : undefined}
+              onMouseLeave={clickable ? (e) => { e.currentTarget.style.background = 'transparent'; } : undefined}
+            >
               {row.map((cell, ci) => (
                 <td key={ci} style={{
                   padding: 'var(--space-2) var(--space-3)',
