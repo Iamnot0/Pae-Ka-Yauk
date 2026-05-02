@@ -134,23 +134,41 @@ function buildFrame(cellsInRow: number, copies: number, displayName: string, sku
 export function buildStickerTspl({ name, sku, qty }: StickerInput): Buffer {
   if (qty < 1) qty = 1;
 
-  // Strip non-ASCII (Burmese chars won't render with the built-in font),
-  // unquote, cap length so the centered name doesn't overflow the cell.
-  const safeName = (name || '?').replace(/[^\x20-\x7E]/g, '?').replace(/"/g, "'");
+  // Strip non-ASCII (TSPL built-in fonts have no Myanmar codepage). Trim
+  // resulting whitespace, drop double-quotes which would terminate the TEXT
+  // command's quoted argument. If what's left has no English letters at all
+  // — happens for items whose `name` is Burmese-only — fall back to the SKU
+  // so the sticker always has a readable top label. (Owner directive
+  // 2026-05-03: stickers stay English-only; no canvas/bitmap path for now.)
+  const stripped = (name || '')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/"/g, "'")
+    .trim();
+  const usable = /[A-Za-z]/.test(stripped) ? stripped : `Item ${sku}`;
   const maxNameChars = Math.max(1, Math.floor(LABEL_WIDTH_DOTS / TEXT_CHAR_W) - 1);
-  const displayName = safeName.length > maxNameChars
-    ? safeName.slice(0, maxNameChars - 1) + '.'
-    : safeName;
+  const displayName = usable.length > maxNameChars
+    ? usable.slice(0, maxNameChars - 1) + '.'
+    : usable;
 
   const fullRows  = Math.floor(qty / COL_COUNT);   // rows fully filled
   const remainder = qty % COL_COUNT;               // leftover cells in last row
 
+  // Header order matters in TSPL: SIZE / GAP must precede REFERENCE; CLS at
+  // the end clears any state left over from a prior job. REFERENCE 0,0 +
+  // SHIFT 0 + OFFSET 0 explicitly reset origin/spacing so the print can't
+  // drift right (regression seen 2026-05-02 + 2026-05-03 — the printer was
+  // remembering offsets from a previous job between power-cycles, pushing
+  // every cell into column 3 and clipping it off the right edge).
   const program: string[] = [
     `SIZE ${ROLL_WIDTH_MM} mm, ${LABEL_HEIGHT_MM} mm`,
     `GAP ${ROW_GAP_MM} mm, 0 mm`,
-    `DIRECTION 1`,
+    `DIRECTION 1,0`,
+    `REFERENCE 0,0`,
+    `SHIFT 0`,
+    `OFFSET 0 mm`,
     `DENSITY 8`,
     `SPEED 4`,
+    `CLS`,
   ];
 
   if (fullRows > 0) {
