@@ -1,0 +1,28 @@
+[Unit]
+Description=Pae Ka Yauk POS — sync drainer (local Postgres → Neon)
+After=network-online.target postgresql.service paekayauk.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paekayauk
+Group=paekayauk
+WorkingDirectory=/home/paekayauk/Desktop/pae-ka-yauk
+EnvironmentFile=/home/paekayauk/Desktop/pae-ka-yauk/.env
+# Parrot's Wi-Fi has no IPv6 route; force Node to prefer IPv4 DNS results
+# so @neondatabase/serverless connects via IPv4 (Neon serves both stacks).
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+ExecStart=/usr/bin/node scripts/syncDrainer.mjs
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/paekayauk-sync.log
+StandardError=append:/var/log/paekayauk-sync.log
+
+# Security hardening — drainer only needs network + the project dir.
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/paekayauk/Desktop/pae-ka-yauk /var/log
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -19,10 +19,12 @@
  */
 
 import { useEffect, useState } from 'react';
-import { CheckCircle2, RefreshCw, WifiOff, AlertTriangle } from 'lucide-react';
+import Link from 'next/link';
+import { CheckCircle2, RefreshCw, WifiOff, AlertTriangle, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
 import { useT } from '@/lib/i18n/useT';
 import { onOutboxChange, listPending, countByStatus, discard, rescheduleForRetry } from '@/lib/client/outbox';
 import { drainOnce } from '@/lib/client/drain';
+import { summarizeOp } from '@/lib/client/opSummary';
 import type { PendingOp } from '@/lib/client/db';
 
 type Status = 'synced' | 'syncing' | 'offline' | 'failed';
@@ -48,6 +50,15 @@ export function SyncStatusPill({ canDebug }: { canDebug: boolean }) {
   const [state, setState] = useState<State>(initial);
   const [open, setOpen] = useState(false);
   const [ops, setOps] = useState<PendingOp[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Recompute pill state from store + navigator.onLine.
   useEffect(() => {
@@ -144,49 +155,110 @@ export function SyncStatusPill({ canDebug }: { canDebug: boolean }) {
             </div>
           ) : (
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {ops.map((op) => (
-                <li key={op.id} style={{
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: 'var(--space-2)',
-                  fontSize: '0.8125rem',
-                  display: 'flex', flexDirection: 'column', gap: 4,
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)' }}>{op.endpoint}</span>
-                    <span style={{ color: STATUS_FG[op.status] ?? 'var(--color-muted-fg)' }}>{op.status}</span>
-                  </div>
-                  <div style={{ color: 'var(--color-muted-fg)', fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', wordBreak: 'break-all' }}>
-                    {op.id}
-                  </div>
-                  {op.lastError && (
-                    <div style={{ color: 'var(--color-destructive)', fontSize: '0.6875rem' }}>
-                      {op.lastError}
+              {ops.map((op) => {
+                const summary = summarizeOp(op);
+                const isOpen = expanded.has(op.id);
+                return (
+                  <li key={op.id} style={{
+                    border: `1px solid ${op.status === 'failed' ? 'var(--color-destructive)' : 'var(--color-border)'}`,
+                    borderRadius: 'var(--radius-sm)',
+                    padding: 'var(--space-2)',
+                    fontSize: '0.8125rem',
+                    display: 'flex', flexDirection: 'column', gap: 4,
+                  }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleExpand(op.id)}
+                      aria-expanded={isOpen}
+                      aria-label={isOpen ? t('sync.panel.collapse') : t('sync.panel.expand')}
+                      style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8,
+                        background: 'transparent', border: 'none', padding: 0,
+                        color: 'inherit', textAlign: 'left', cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{summary.title}</div>
+                        <div style={{ color: 'var(--color-muted-fg)', fontSize: '0.6875rem', marginTop: 2 }}>
+                          {summary.subtitle} · <span style={{ color: STATUS_FG[op.status] ?? 'var(--color-muted-fg)' }}>{op.status}</span>
+                        </div>
+                      </div>
+                      {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </button>
+                    {summary.errorMessage && (
+                      <div style={{ color: 'var(--color-destructive)', fontSize: '0.6875rem', wordBreak: 'break-word' }}>
+                        {summary.errorMessage}
+                      </div>
+                    )}
+                    {isOpen && (
+                      <dl style={{
+                        display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 12px',
+                        margin: 0, paddingTop: 6, borderTop: '1px dashed var(--color-border)',
+                        fontSize: '0.6875rem',
+                      }}>
+                        {summary.details.map((d, i) => (
+                          <DetailRow key={i} label={d.label} value={d.value} />
+                        ))}
+                      </dl>
+                    )}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => { void rescheduleForRetry(op.id, 'manual retry', 0).then(() => drainOnce()); }}
+                      >
+                        {t('sync.panel.retry')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => { void discard(op.id); }}
+                      >
+                        {t('sync.panel.discard')}
+                      </button>
                     </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => { void rescheduleForRetry(op.id, 'manual retry', 0).then(() => drainOnce()); }}
-                    >
-                      {t('sync.panel.retry')}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => { void discard(op.id); }}
-                    >
-                      {t('sync.panel.discard')}
-                    </button>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
+          <div style={{
+            marginTop: 'var(--space-3)',
+            paddingTop: 'var(--space-2)',
+            borderTop: '1px solid var(--color-border)',
+            textAlign: 'center',
+          }}>
+            <Link
+              href={'/sync-status' as unknown as never}
+              onClick={() => setOpen(false)}
+              style={{
+                fontSize: '0.75rem', color: 'var(--color-accent)',
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                textDecoration: 'none',
+              }}
+            >
+              {t('sync.panel.viewAll')} <ExternalLink size={11} />
+            </Link>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  const isMonoLabel = label.includes('ID') || label.includes('ULID');
+  return (
+    <>
+      <dt style={{ color: 'var(--color-muted-fg)' }}>{label}</dt>
+      <dd style={{
+        margin: 0,
+        wordBreak: 'break-all',
+        fontFamily: isMonoLabel ? 'var(--font-mono)' : undefined,
+      }}>
+        {value}
+      </dd>
+    </>
   );
 }
 

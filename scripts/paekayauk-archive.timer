@@ -1,0 +1,15 @@
+[Unit]
+Description=Pae Ka Yauk POS — daily archive timer (02:00 Yangon)
+Requires=paekayauk-archive.service
+
+[Timer]
+# 02:00 Yangon (UTC+6:30) = 19:30 UTC daily. systemd OnCalendar uses local
+# system time; the cashier station's TZ is set to Asia/Yangon so this fires
+# at 02:00 local. If the box is off at 02:00, Persistent=true catches up on
+# the next boot.
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

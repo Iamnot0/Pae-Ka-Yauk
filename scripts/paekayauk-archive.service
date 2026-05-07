@@ -1,0 +1,21 @@
+[Unit]
+Description=Pae Ka Yauk POS — daily archive of >30-day sales to local + GDrive
+After=network-online.target postgresql.service paekayauk-sync.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=paekayauk
+Group=paekayauk
+WorkingDirectory=/home/paekayauk/Desktop/pae-ka-yauk
+EnvironmentFile=/home/paekayauk/Desktop/pae-ka-yauk/.env
+# Force IPv4 DNS (Parrot's Wi-Fi has no IPv6 route — same as the drainer)
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+# Default mode is dry-run. Edit the systemd unit to add --apply once Boss has
+# verified output and confirmed Google Drive credentials are wired.
+ExecStart=/usr/bin/node scripts/archiveOldSales.mjs
+StandardOutput=append:/var/log/paekayauk-archive.log
+StandardError=append:/var/log/paekayauk-archive.log
+
+[Install]
+WantedBy=multi-user.target
