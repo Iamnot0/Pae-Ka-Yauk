@@ -558,66 +558,47 @@ export function PosScreen({ items }: Props) {
           </div>
         )}
 
-        {/* Tender — Cash + KBZ Pay only (Card/Bank Transfer dropped 2026-04-26) */}
+        {/* Tender row — Cash chip + KBZ Pay chip + Delivery fee input
+            share one 3-column row (owner brief 2026-05-19). Cash tendered
+            input lives alone on its own row below so it has space to
+            breathe and Enter-to-pay is the obvious action. */}
         {cart.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 4 }}>
               <TenderChip icon={<Banknote size={14} />}     label={t('pos.cashTender')}    active={tender === 'CASH'}          onClick={() => setTender('CASH')} />
               <TenderChip icon={<Smartphone size={14} />}   label="KBZ Pay"                active={tender === 'MOBILE_MONEY'}  onClick={() => setTender('MOBILE_MONEY')} />
+              <DeliveryFeeCell
+                value={deliveryFee}
+                onChange={setDeliveryFee}
+                label={t('pos.delivery')}
+              />
             </div>
 
-            {/* Delivery fee + Cash side-by-side — saves vertical space so
-                the cart items list above breathes. When tender is KBZ Pay
-                (no cash count needed), Delivery takes the full row alone.
-                Owner brief 2026-04-28: drop the "(MMK)" suffix from labels
-                — the field is obviously money, and dropping it keeps the
-                row visually quiet. */}
-            <div className="form-grid-2">
+            {tender === 'CASH' && (
               <div>
-                <label htmlFor="pos-delivery-fee" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Truck size={14} />
-                  {t('pos.delivery')}
+                <label htmlFor="pos-cash-tendered" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Banknote size={14} />
+                  {t('pos.cashTender')}
                 </label>
                 <input
-                  id="pos-delivery-fee"
+                  id="pos-cash-tendered"
                   type="number"
                   inputMode="numeric"
                   step="100"
                   min="0"
-                  value={deliveryFee}
-                  onChange={(e) => setDeliveryFee(e.target.value)}
-                  placeholder="0"
+                  value={cashTendered}
+                  onChange={(e) => setCashTendered(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !paying && cashNum >= total && cart.length > 0) {
+                      e.preventDefault();
+                      void pay();
+                    }
+                  }}
+                  placeholder={total.toLocaleString()}
+                  autoFocus
                 />
               </div>
-
-              {tender === 'CASH' && (
-                <div>
-                  <label htmlFor="pos-cash-tendered" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Banknote size={14} />
-                    {t('pos.cashTender')}
-                  </label>
-                  <input
-                    id="pos-cash-tendered"
-                    type="number"
-                    inputMode="numeric"
-                    step="100"
-                    min="0"
-                    value={cashTendered}
-                    onChange={(e) => setCashTendered(e.target.value)}
-                    onKeyDown={(e) => {
-                      // Press Enter inside the cash input → fire Pay Now
-                      // (only if the button would actually be enabled).
-                      if (e.key === 'Enter' && !paying && cashNum >= total && cart.length > 0) {
-                        e.preventDefault();
-                        void pay();
-                      }
-                    }}
-                    placeholder={total.toLocaleString()}
-                    autoFocus
-                  />
-                </div>
-              )}
-            </div>
+            )}
 
             {/* Status row under the side-by-side inputs — short-by /
                 change is the thing the cashier actually checks before
@@ -760,6 +741,51 @@ function TenderChip({ icon, label, active, onClick }: {
       {icon}
       <span style={{ lineHeight: 1.1 }}>{label}</span>
     </button>
+  );
+}
+
+// Same visual family as TenderChip but accepts a numeric value. Lives in
+// the tender row so cashier sets payment method + delivery fee together
+// in one glance (owner brief 2026-05-19).
+function DeliveryFeeCell({ value, onChange, label }: {
+  value: string; onChange: (v: string) => void; label: string;
+}) {
+  return (
+    <label
+      htmlFor="pos-delivery-fee"
+      style={{
+        display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+        padding: '6px 4px',
+        background: 'var(--color-surface)',
+        color: 'var(--color-foreground)',
+        border: '1px solid var(--color-border-strong)',
+        borderRadius: 'var(--radius-sm)',
+        fontFamily: 'inherit',
+        fontSize: '0.75rem',
+        fontWeight: 500,
+        minHeight: 48,
+        cursor: 'text',
+      }}
+    >
+      <Truck size={14} />
+      <input
+        id="pos-delivery-fee"
+        type="number"
+        inputMode="numeric"
+        step="100"
+        min="0"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={label}
+        style={{
+          width: '100%', minWidth: 0,
+          border: 'none', background: 'transparent', outline: 'none',
+          textAlign: 'center', padding: 0,
+          fontFamily: 'inherit', fontSize: '0.75rem', color: 'inherit',
+          lineHeight: 1.1,
+        }}
+      />
+    </label>
   );
 }
 
