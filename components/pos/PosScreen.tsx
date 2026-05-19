@@ -880,12 +880,27 @@ function ReceiptView({ receipt, cart, items, onClose, t }: {
 
   // Auto-print once on mount. useRef guards against React 18 StrictMode
   // running mount effects twice in dev — we never want two physical jobs.
+  //
+  // Wait briefly for the server-assigned receiptNumber before printing so
+  // the paper barcode shows "PKY00042" not the ULID fallback. The outbox
+  // drain takes ~300ms on local Postgres; we cap the wait at 2s so that
+  // truly offline sales still print (with ULID) and the customer doesn't
+  // stand at the counter waiting.
   const autoRan = useRef(false);
   useEffect(() => {
     if (autoRan.current) return;
-    autoRan.current = true;
-    void doPrint();
-  }, [doPrint]);
+    if (s.receiptNumber !== null) {
+      autoRan.current = true;
+      void doPrint();
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      if (autoRan.current) return;
+      autoRan.current = true;
+      void doPrint();
+    }, 2000);
+    return () => clearTimeout(timeoutId);
+  }, [doPrint, s.receiptNumber]);
   return (
     <div className="receipt-wrap" style={{ maxWidth: 360, margin: '0 auto', padding: 'var(--space-4)' }}>
       {/* ───── CUSTOMER RECEIPT ─────
