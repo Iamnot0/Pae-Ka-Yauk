@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import Link from 'next/link';
 
 type Tint = 'success' | 'info' | 'warning' | 'destructive' | 'primary';
 
@@ -9,6 +10,8 @@ interface Props {
   labelLocal?: string;
   value: ReactNode;
   tint: Tint;
+  /** When set, the card becomes a clickable link to this route (drill-down). */
+  href?: string;
 }
 
 const TINT_BG: Record<Tint, string> = {
@@ -34,18 +37,9 @@ const TINT_FG: Record<Tint, string> = {
  * spends their day. Override the .card-xl class with inline padding so
  * other dashboard panels keep the larger pad.
  */
-export function KpiCard({ icon: Icon, label, labelLocal, value, tint }: Props) {
-  return (
-    <div
-      className="card-xl"
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        minWidth: 0,
-        padding: 'var(--space-3) var(--space-4)',
-      }}
-    >
+export function KpiCard({ icon: Icon, label, labelLocal, value, tint, href }: Props) {
+  const cardBody = (
+    <>
       <div
         aria-hidden="true"
         style={{
@@ -94,6 +88,35 @@ export function KpiCard({ icon: Icon, label, labelLocal, value, tint }: Props) {
           </>
         )}
       </div>
+    </>
+  );
+
+  const baseStyle = {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+    minWidth: 0,
+    padding: 'var(--space-3) var(--space-4)',
+    textDecoration: 'none',
+    color: 'inherit',
+  };
+
+  if (href) {
+    return (
+      <Link
+        href={href as unknown as never}
+        className="card-xl kpi-card-link"
+        style={baseStyle}
+        aria-label={`${label}: drill down`}
+      >
+        {cardBody}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="card-xl" style={baseStyle}>
+      {cardBody}
     </div>
   );
 }

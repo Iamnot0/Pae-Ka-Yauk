@@ -78,7 +78,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           </h2>
           <PeriodToggle active={period} />
         </div>
-        <SalesKpiGrid kpis={salesKpis} />
+        <SalesKpiGrid kpis={salesKpis} period={period} />
         {/* Two collapsible side-by-side panels: top-selling stocks (left) and
             top raw materials by value (right). Each one's body has its own
             internal scroll (maxHeight) so the cards never push the rest of

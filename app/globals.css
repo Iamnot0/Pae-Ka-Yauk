@@ -997,6 +997,22 @@ html[data-sidebar='collapsed'] .app-sidebar .nav-item {
   box-shadow: var(--shadow-md);
 }
 
+/* Drill-down KPI card — clickable variant that lifts on hover so the
+   owner sees this number is interactive (Revenue/Profit/Slips/Items). */
+.kpi-card-link {
+  cursor: pointer;
+  transition: box-shadow var(--transition-fast), transform var(--transition-fast), border-color var(--transition-fast);
+}
+.kpi-card-link:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+  border-color: var(--color-border-strong);
+}
+.kpi-card-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 /* Search pill — for the header search input */
 .search-pill {
   display: flex;

@@ -17,7 +17,7 @@ import type { SalesKpis } from '@/lib/repos/dashboard';
  * directly drives the headline number — when items lack a costed recipe
  * the grid surfaces a "covers N of M" caveat below.
  */
-export function SalesKpiGrid({ kpis }: { kpis: SalesKpis }) {
+export function SalesKpiGrid({ kpis, period }: { kpis: SalesKpis; period?: string }) {
   const t = useT();
   const totalLines = kpis.costed + kpis.uncosted;
 
@@ -30,6 +30,12 @@ export function SalesKpiGrid({ kpis }: { kpis: SalesKpis }) {
     kpis.profitMmk == null ? 'info'
       : kpis.profitMmk >= 0 ? 'success'
       : 'destructive';
+
+  // Drill-down targets — all sales KPIs land on the ledger tab of /reports,
+  // anchored to the Recent Sales section where the per-slip detail lives.
+  // Carrying `period` preserves the user's current dashboard window.
+  const periodQs = period ? `period=${encodeURIComponent(period)}&` : '';
+  const reportsHref = `/reports?${periodQs}tab=ledger#recent-sales`;
 
   return (
     <section
@@ -44,10 +50,10 @@ export function SalesKpiGrid({ kpis }: { kpis: SalesKpis }) {
       }}
       className="dash-kpi-grid"
     >
-      <KpiCard icon={CircleDollarSign} label={t('dash.kpi.revenue')}   value={<MMK amount={kpis.revenueMmk} />} tint="success" />
-      <KpiCard icon={TrendingUp}       label={t('dash.kpi.profit')}    value={profitValue}                      tint={profitTint} />
-      <KpiCard icon={Receipt}          label={t('dash.kpi.slips')}     value={kpis.slipsCount}                  tint="primary" />
-      <KpiCard icon={ShoppingBag}      label={t('dash.kpi.itemsSold')} value={Math.round(kpis.itemsSold)}       tint="info" />
+      <KpiCard icon={CircleDollarSign} label={t('dash.kpi.revenue')}   value={<MMK amount={kpis.revenueMmk} />} tint="success"    href={reportsHref} />
+      <KpiCard icon={TrendingUp}       label={t('dash.kpi.profit')}    value={profitValue}                      tint={profitTint} href={reportsHref} />
+      <KpiCard icon={Receipt}          label={t('dash.kpi.slips')}     value={kpis.slipsCount}                  tint="primary"    href={reportsHref} />
+      <KpiCard icon={ShoppingBag}      label={t('dash.kpi.itemsSold')} value={Math.round(kpis.itemsSold)}       tint="info"       href={reportsHref} />
       {kpis.uncosted > 0 && totalLines > 0 && (
         <div style={{
           gridColumn: '1 / -1',

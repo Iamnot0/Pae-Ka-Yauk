@@ -259,11 +259,13 @@ export function ReportsView({ period, transactions, stockActivity, inventory, sh
           flows from the same `transactions.recentSales` array we pass into
           the PDF, so the PDF + on-screen view stay in lockstep. */}
       {canVoid && transactions.recentSales.length > 0 && (
-        <RecentSalesAdmin
-          rows={transactions.recentSales}
-          slipsWithLines={transactions.salesWithLines}
-          onVoid={(r) => setVoidTarget({ id: r.id, receiptNumber: r.receiptNumber, total: r.total })}
-        />
+        <div id="recent-sales" style={{ scrollMarginTop: 'var(--space-4)' }}>
+          <RecentSalesAdmin
+            rows={transactions.recentSales}
+            slipsWithLines={transactions.salesWithLines}
+            onVoid={(r) => setVoidTarget({ id: r.id, receiptNumber: r.receiptNumber, total: r.total })}
+          />
+        </div>
       )}
 
       <VoidSaleModal
