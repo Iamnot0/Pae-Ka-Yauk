@@ -564,7 +564,7 @@ export function PosScreen({ items }: Props) {
             breathe and Enter-to-pay is the obvious action. */}
         {cart.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 4 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
               <TenderChip icon={<Banknote size={14} />}     label={t('pos.cashTender')}    active={tender === 'CASH'}          onClick={() => setTender('CASH')} />
               <TenderChip icon={<Smartphone size={14} />}   label="KBZ Pay"                active={tender === 'MOBILE_MONEY'}  onClick={() => setTender('MOBILE_MONEY')} />
               <DeliveryFeeCell
@@ -725,28 +725,30 @@ function TenderChip({ icon, label, active, onClick }: {
       type="button"
       onClick={onClick}
       style={{
-        display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-        padding: '6px 4px',
+        display: 'inline-flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+        padding: '6px 8px',
         background: active ? 'var(--color-primary)' : 'var(--color-surface)',
         color: active ? '#fff' : 'var(--color-foreground)',
         border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border-strong)'}`,
         borderRadius: 'var(--radius-sm)',
         cursor: 'pointer',
         fontFamily: 'inherit',
-        fontSize: '0.75rem',
+        fontSize: '0.8125rem',
         fontWeight: active ? 600 : 500,
-        minHeight: 48,
+        minHeight: 36,
+        lineHeight: 1.1,
       }}
     >
       {icon}
-      <span style={{ lineHeight: 1.1 }}>{label}</span>
+      <span>{label}</span>
     </button>
   );
 }
 
-// Same visual family as TenderChip but accepts a numeric value. Lives in
-// the tender row so cashier sets payment method + delivery fee together
-// in one glance (owner brief 2026-05-19).
+// Shares TenderChip's visual family (height, border, radius, surface) but
+// is a label-wrapped numeric input. Truck icon left, input fills the rest
+// — gives the cashier a wide, comfortable number field while Cash/KBZ stay
+// compact (owner brief 2026-05-19).
 function DeliveryFeeCell({ value, onChange, label }: {
   value: string; onChange: (v: string) => void; label: string;
 }) {
@@ -754,16 +756,16 @@ function DeliveryFeeCell({ value, onChange, label }: {
     <label
       htmlFor="pos-delivery-fee"
       style={{
-        display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-        padding: '6px 4px',
+        display: 'inline-flex', flexDirection: 'row', alignItems: 'center', gap: 6,
+        padding: '6px 10px',
         background: 'var(--color-surface)',
         color: 'var(--color-foreground)',
         border: '1px solid var(--color-border-strong)',
         borderRadius: 'var(--radius-sm)',
         fontFamily: 'inherit',
-        fontSize: '0.75rem',
+        fontSize: '0.8125rem',
         fontWeight: 500,
-        minHeight: 48,
+        minHeight: 36,
         cursor: 'text',
       }}
     >
@@ -778,10 +780,10 @@ function DeliveryFeeCell({ value, onChange, label }: {
         onChange={(e) => onChange(e.target.value)}
         placeholder={label}
         style={{
-          width: '100%', minWidth: 0,
+          flex: 1, minWidth: 0,
           border: 'none', background: 'transparent', outline: 'none',
-          textAlign: 'center', padding: 0,
-          fontFamily: 'inherit', fontSize: '0.75rem', color: 'inherit',
+          textAlign: 'right', padding: 0,
+          fontFamily: 'inherit', fontSize: '0.8125rem', color: 'inherit',
           lineHeight: 1.1,
         }}
       />
