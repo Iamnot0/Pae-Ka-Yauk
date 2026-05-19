@@ -50,11 +50,14 @@ const gzipAsync = promisify(gzip);
 // to age-filter rows. `tableName` is wrapped in double quotes by the SQL
 // template — schema uses snake_case so no quoting actually needed, but kept
 // for safety against future renames.
+// sale_lines has NO date column of its own — its archive window is driven
+// by the parent sale_transactions."createdAt" via the saleId FK. All other
+// listed tables carry their own "createdAt" timestamp.
 const ARCHIVE_TABLES = [
-  { table: 'sale_lines',         dateColumn: '"createdAt"', parent: 'sale_transactions' },
+  { table: 'sale_lines',         dateColumn: '"createdAt"', parent: 'sale_transactions', parentJoinKey: '"saleId"' },
   { table: 'sale_transactions',  dateColumn: '"createdAt"', parent: null },
   { table: 'stock_adjustments',  dateColumn: '"createdAt"', parent: null },
-  { table: 'stock_movements',    dateColumn: '"occurredAt"', parent: null },
+  { table: 'stock_movements',    dateColumn: '"createdAt"', parent: null },
   { table: 'waste_entries',      dateColumn: '"createdAt"', parent: null },
   { table: 'production_batches', dateColumn: '"createdAt"', parent: null },
 ];
@@ -118,28 +121,45 @@ async function main() {
   await pool.end();
 }
 
-async function archiveTable({ table, dateColumn }) {
-  // Build the WHERE filter
+async function archiveTable({ table, dateColumn, parent, parentJoinKey }) {
+  // Child tables (sale_lines) carry no date — get it from parent via JOIN.
+  const useParent = !!parent && !!parentJoinKey;
+  const fromClause = useParent
+    ? `${table} c JOIN ${parent} p ON p.id = c.${parentJoinKey}`
+    : table;
+  const selectClause = useParent
+    ? `c.*, p.${dateColumn} AS "_parentDate"`
+    : '*';
+  const dateExpr = useParent ? `p.${dateColumn}` : dateColumn;
+
   let where, params;
   if (SPECIFIC_MONTH) {
-    where = `${dateColumn} >= $1::date AND ${dateColumn} < ($1::date + INTERVAL '1 month')`;
+    where = `${dateExpr} >= $1::date AND ${dateExpr} < ($1::date + INTERVAL '1 month')`;
     params = [`${SPECIFIC_MONTH}-01`];
   } else {
-    where = `${dateColumn} < NOW() - INTERVAL '${RETENTION_DAYS} days'`;
+    where = `${dateExpr} < NOW() - INTERVAL '${RETENTION_DAYS} days'`;
     params = [];
   }
 
-  // Fetch rows
-  const sel = await pool.query(`SELECT * FROM ${table} WHERE ${where} ORDER BY ${dateColumn}`, params);
+  const sel = await pool.query(
+    `SELECT ${selectClause} FROM ${fromClause} WHERE ${where} ORDER BY ${dateExpr}`,
+    params,
+  );
   if (sel.rows.length === 0) {
     return { table, rows: 0, bytes: 0, deleted: false, file: null };
   }
 
-  // Group by month so each archive file holds one calendar month
+  // Group by month using either the row's own date or the JOIN'd parent date.
   const byMonth = new Map();
   for (const row of sel.rows) {
-    const dCol = dateColumn.replace(/"/g, '');
-    const ts = row[dCol];
+    let ts;
+    if (useParent) {
+      ts = row._parentDate;
+      delete row._parentDate; // keep the archive file clean of synthetic cols
+    } else {
+      const dCol = dateColumn.replace(/"/g, '');
+      ts = row[dCol];
+    }
     const d = ts instanceof Date ? ts : new Date(ts);
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
     if (!byMonth.has(key)) byMonth.set(key, []);
@@ -174,7 +194,12 @@ async function archiveTable({ table, dateColumn }) {
   // DELETE only with --apply, and only if archive write succeeded.
   let deleted = false;
   if (APPLY) {
-    const del = await pool.query(`DELETE FROM ${table} WHERE ${where}`, params);
+    // For child tables the WHERE references parent's date, so the DELETE has
+    // to USING the parent (Postgres' join-aware delete form).
+    const delQuery = useParent
+      ? `DELETE FROM ${table} c USING ${parent} p WHERE p.id = c.${parentJoinKey} AND ${where}`
+      : `DELETE FROM ${table} WHERE ${where}`;
+    const del = await pool.query(delQuery, params);
     deleted = del.rowCount > 0;
     console.log(`[archive]   ${table}: archived ${sel.rows.length} → DELETE ${del.rowCount} (sync_outbox triggers will mirror to Neon)`);
   } else {
