@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Plus, Minus, Trash2, X, Receipt, Banknote, Smartphone, Printer, Lock, Truck } from 'lucide-react';
+import { Plus, Minus, Trash2, X, Receipt, Banknote, Printer, Lock, Truck, Percent } from 'lucide-react';
 import type { ItemCategory } from '@/lib/repos/items';
 import type { DictKey } from '@/lib/i18n/dict';
 
@@ -38,7 +38,7 @@ import { useT } from '@/lib/i18n/useT';
 import { trBoth } from '@/lib/i18n/dict';
 import { MMK } from '@/components/i18n/MMK';
 import { renderReceiptCanvas } from '@/lib/printing/renderReceiptCanvas';
-import { computeTax } from '@/lib/config/tax';
+import { applyTaxIf } from '@/lib/config/tax';
 import { newId } from '@/lib/client/ulid';
 import { enqueueWrite, onOpDone } from '@/lib/client/outbox';
 // Scanner is mounted globally in app/(app)/layout.tsx → on scan, the user
@@ -56,10 +56,11 @@ interface Props {
   items: CatalogItem[];
 }
 
-// UI offers Cash + KBZ Pay only (owner pref 2026-04-26). The server still
-// validates against the full TenderType enum, so old historical sales with
-// CARD/BANK_TRANSFER remain valid for reports.
-type Tender = 'CASH' | 'MOBILE_MONEY';
+// UI offers Cash only (owner pref 2026-05-21 — KBZ Pay / MOBILE_MONEY
+// removed entirely along with historical KBZ sale_transactions). The server
+// still validates against the remaining TenderType values for any future
+// re-introduction of CARD/BANK_TRANSFER/SPLIT/CREDIT.
+type Tender = 'CASH';
 
 interface CartLine {
   itemId: string;
@@ -79,6 +80,8 @@ interface SaleResponse {
     cashierId?: string;
     modeAtCreation?: 'POS_PAUSED' | 'FULL';
     subtotal: number;
+    /** Whether the cashier opted-in to 5% tax for this sale. */
+    taxApplied: boolean;
     taxTotal: number;
     discountTotal: number;
     deliveryFee: number;
@@ -107,9 +110,16 @@ export function PosScreen({ items }: Props) {
   const router = useRouter();
 
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [tender, setTender] = useState<Tender>('CASH');
+  // Tender is locked to CASH (KBZ removed 2026-05-21). Kept as a typed const
+  // so payload shape stays explicit; if future tender methods return, this
+  // becomes a useState again.
+  const tender: Tender = 'CASH';
   const [cashTendered, setCashTendered] = useState('');
   const [deliveryFee, setDeliveryFee] = useState('');
+  // Tax opt-in per sale (owner pref 2026-05-21). Default false = no tax line
+  // on the slip. Cashier toggles via the Tax button when a customer asks for
+  // a tax receipt. Resets to false after each successful Pay (see clearCart).
+  const [taxApplied, setTaxApplied] = useState(false);
   const [posCat, setPosCat] = useState<PosCatKey>('ALL');
 
   // Filter the items grid by the active quick-filter chip. ALL bypasses
@@ -129,9 +139,10 @@ export function PosScreen({ items }: Props) {
   const [receiptCart, setReceiptCart] = useState<CartLine[]>([]);
 
   const subtotal = useMemo(() => cart.reduce((s, l) => s + l.unitPrice * l.qty, 0), [cart]);
-  // Flat-5% policy — matches the server-side `computeTax` in /api/sales.
+  // Opt-in 5% policy — matches the server-side `applyTaxIf` in /api/sales.
+  // When taxApplied = false, taxTotal = 0 and the slip omits the Tax line.
   // Per-item `taxRate` on CartLine is intentionally ignored under this policy.
-  const taxTotal = useMemo(() => computeTax(subtotal), [subtotal]);
+  const taxTotal = useMemo(() => applyTaxIf(taxApplied, subtotal), [taxApplied, subtotal]);
   // Delivery fee — added AFTER tax (service charge, not VAT-able). Matches
   // the same math in /api/sales so client + server agree.
   const deliveryNum = Math.max(0, Math.floor(Number(deliveryFee) || 0));
@@ -243,7 +254,9 @@ export function PosScreen({ items }: Props) {
   const removeLine = (itemId: string) =>
     setCart((prev) => prev.filter((l) => l.itemId !== itemId));
 
-  const clearCart = () => { setCart([]); setCashTendered(''); setDeliveryFee(''); setError(''); };
+  const clearCart = () => {
+    setCart([]); setCashTendered(''); setDeliveryFee(''); setTaxApplied(false); setError('');
+  };
 
   const pay = async () => {
     if (cart.length === 0) { setError('Cart is empty'); return; }
@@ -262,8 +275,9 @@ export function PosScreen({ items }: Props) {
       const payload = {
         deviceId: 'WEB-01',
         tenderType: tender,
-        amountTendered: tender === 'CASH' ? cashNum : total,
+        amountTendered: cashNum,
         deliveryFee: deliveryNum,
+        taxApplied,
         lines,
       };
 
@@ -279,22 +293,23 @@ export function PosScreen({ items }: Props) {
           cashierId: '',
           modeAtCreation: 'POS_PAUSED',
           subtotal,
+          taxApplied,
           taxTotal,
           discountTotal: 0,
           deliveryFee: deliveryNum,
           total,
           tenderType: tender,
-          amountTendered: tender === 'CASH' ? cashNum : total,
-          changeGiven: tender === 'CASH' ? Math.max(0, cashNum - total) : 0,
+          amountTendered: cashNum,
+          changeGiven: Math.max(0, cashNum - total),
           lines: cart.map((l, i) => ({
             id: lines[i].id,
             itemId: l.itemId,
             itemName: l.name,
             qty: l.qty,
             unitPrice: l.unitPrice,
-            taxRate: 0.05,
+            taxRate: taxApplied ? 0.05 : 0,
             lineTotal: l.unitPrice * l.qty,
-            lineTax: Math.round(l.unitPrice * l.qty * 0.05),
+            lineTax: applyTaxIf(taxApplied, l.unitPrice * l.qty),
           })),
         },
         deductions: [],
@@ -304,7 +319,7 @@ export function PosScreen({ items }: Props) {
       await enqueueWrite('/api/sales', payload, { id: saleId });
       setReceiptCart(cart); // snapshot BEFORE clearing
       setReceipt(localReceipt);
-      setCart([]); setCashTendered(''); setDeliveryFee('');
+      setCart([]); setCashTendered(''); setDeliveryFee(''); setTaxApplied(false);
       router.refresh();
     } catch (e) {
       setError((e as Error).message || 'Sale enqueue failed');
@@ -558,15 +573,17 @@ export function PosScreen({ items }: Props) {
           </div>
         )}
 
-        {/* Tender row — Cash chip + KBZ Pay chip + Delivery fee input
-            share one 3-column row (owner brief 2026-05-19). Cash tendered
-            input lives alone on its own row below so it has space to
-            breathe and Enter-to-pay is the obvious action. */}
+        {/* Cash chip + Tax toggle + Delivery fee input share one 3-column
+            row (owner brief 2026-05-21 — replaces the prior Cash + KBZ Pay
+            + Delivery layout). Cash is now informational (it's the only
+            tender method); Tax is the new opt-in 5% toggle. Cash tendered
+            input still lives alone on the row below so Enter-to-pay
+            remains the obvious action. */}
         {cart.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
-              <TenderChip icon={<Banknote size={14} />}     label={t('pos.cashTender')}    active={tender === 'CASH'}          onClick={() => setTender('CASH')} />
-              <TenderChip icon={<Smartphone size={14} />}   label="KBZ Pay"                active={tender === 'MOBILE_MONEY'}  onClick={() => setTender('MOBILE_MONEY')} />
+              <TenderChip icon={<Banknote size={14} />}  label={t('pos.cashTender')}  active                onClick={() => { /* only tender — kept as a status chip */ }} />
+              <TenderChip icon={<Percent size={14} />}   label={`${t('pos.tax')} 5%`}  active={taxApplied}  onClick={() => setTaxApplied((v) => !v)} />
               <DeliveryFeeCell
                 value={deliveryFee}
                 onChange={setDeliveryFee}

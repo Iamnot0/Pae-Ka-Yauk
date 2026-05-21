@@ -35,7 +35,7 @@ CREATE TYPE "WasteReason" AS ENUM ('SPOILED', 'OVERPRODUCTION', 'STAFF_MEAL', 'T
 CREATE TYPE "SaleStatus" AS ENUM ('COMPLETED', 'VOIDED', 'REFUNDED', 'PARTIAL_REFUNDED');
 
 -- CreateEnum
-CREATE TYPE "TenderType" AS ENUM ('CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'SPLIT', 'CREDIT');
+CREATE TYPE "TenderType" AS ENUM ('CASH', 'CARD', 'BANK_TRANSFER', 'SPLIT', 'CREDIT');
 
 -- CreateTable
 CREATE TABLE "tenants" (
@@ -283,6 +283,7 @@ CREATE TABLE "sale_transactions" (
     "receiptNumber" TEXT NOT NULL,
     "cashierId" TEXT,
     "subtotal" DECIMAL(14,2) NOT NULL,
+    "taxApplied" BOOLEAN NOT NULL DEFAULT false,
     "taxTotal" DECIMAL(14,2) NOT NULL DEFAULT 0,
     "discountTotal" DECIMAL(14,2) NOT NULL DEFAULT 0,
     "total" DECIMAL(14,2) NOT NULL,

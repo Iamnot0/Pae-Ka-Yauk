@@ -40,12 +40,15 @@ import { sql } from '@/lib/neonHttp';
 import { recordSaleDeductions, type DeductSpec } from '@/lib/stock/ledger';
 import { getActiveRecipesForItems } from '@/lib/repos/recipes';
 import { computeDeductions, type SaleLineForBom, type RecipeForBom } from '@/lib/stock/bom';
-import { computeTax } from '@/lib/config/tax';
+import { applyTaxIf } from '@/lib/config/tax';
 import { ULID_REGEX } from '@/lib/client/ulid';
 import { getInventoryMode, shouldDeductRawMaterials, type InventoryMode } from '@/lib/featureMode';
 import type { Unit } from '@/lib/repos/materials';
 
-const TENDER_TYPES = ['CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'SPLIT', 'CREDIT'] as const;
+// MOBILE_MONEY removed 2026-05-21 — shop no longer accepts KBZ Pay. The DB
+// enum dropped the value in the same migration; historical rows were
+// deleted. Re-adding requires both a schema migration AND owner sign-off.
+const TENDER_TYPES = ['CASH', 'CARD', 'BANK_TRANSFER', 'SPLIT', 'CREDIT'] as const;
 
 const Schema = z.object({
   id: z.string().regex(ULID_REGEX),
@@ -57,6 +60,11 @@ const Schema = z.object({
   receiptNumber: z.string().regex(/^PKY\d{5}$/).optional(),
   tenderType: z.enum(TENDER_TYPES),
   amountTendered: z.number().nonnegative().optional(),
+  // Tax opt-in per sale. Cashier toggles on /pos; default false = no tax line
+  // on the slip and taxTotal=0. When true, server computes 5% of subtotal.
+  // Client-sent value is honored (server doesn't second-guess intent), but
+  // the *amount* is always recomputed server-side per Hard Rule #5.
+  taxApplied: z.boolean().default(false),
   discountTotal: z.number().nonnegative().default(0),
   deliveryFee: z.number().nonnegative().default(0),
   notes: z.string().trim().max(500).optional(),
@@ -132,11 +140,14 @@ export async function POST(req: Request) {
   const itemById = Object.fromEntries(items.map(i => [i.id, i]));
 
   // --- 2. Compute totals server-side ---
-  // Tax policy (owner-confirmed 2026-04-25): flat 5% on every slip's
-  // subtotal — not per-item. `sellable_items.taxRate` is intentionally
-  // ignored. Per-line `lineTax` is a proportional slice kept for report
-  // accuracy (COGS/tax-owing breakdowns), and may differ from `taxTotal`
-  // by ≤1 MMK due to rounding. The authoritative number is `taxTotal`.
+  // Tax policy (owner-confirmed 2026-05-21): opt-in per sale. `taxApplied`
+  // comes from the cart; when true, 5% of subtotal is added; when false,
+  // taxTotal = 0 and the slip omits the Tax line. Per-line `lineTax` is a
+  // proportional slice kept for report accuracy (COGS/tax-owing breakdowns)
+  // and may differ from `taxTotal` by ≤1 MMK due to rounding. Authoritative
+  // number is `taxTotal`. `sellable_items.taxRate` remains intentionally
+  // ignored (kept for Phase 2 per-jurisdiction overrides).
+  const taxApplied = payload.taxApplied;
   let subtotal = 0;
   const linesPreTax = payload.lines.map((l) => {
     const item = itemById[l.itemId];
@@ -144,10 +155,10 @@ export async function POST(req: Request) {
     subtotal += lineBase;
     return { ...l, item, lineTotal: lineBase };
   });
-  const taxTotal = computeTax(subtotal);
+  const taxTotal = applyTaxIf(taxApplied, subtotal);
   const computedLines = linesPreTax.map((l) => ({
     ...l,
-    lineTax: computeTax(l.lineTotal),
+    lineTax: applyTaxIf(taxApplied, l.lineTotal),
   }));
 
   const discountTotal = payload.discountTotal ?? 0;
@@ -304,7 +315,7 @@ export async function POST(req: Request) {
          INSERT INTO sale_transactions (
            id, "tenantId", "outletId", "shiftId", "deviceId", "receiptNumber",
            "modeAtCreation",
-           "cashierId", subtotal, "taxTotal", "discountTotal", "deliveryFee", total,
+           "cashierId", subtotal, "taxApplied", "taxTotal", "discountTotal", "deliveryFee", total,
            "tenderType", "tenderDetails", "amountTendered", "changeGiven",
            status, "createdAt", "serverReceivedAt"
          )
@@ -312,9 +323,9 @@ export async function POST(req: Request) {
            $1, $2, NULL, NULL, $3,
            COALESCE($4::text, (SELECT num FROM next_receipt)),
            $5,
-           $6, $7, $8, $9, $10, $11,
-           $12, NULL, $13, $14,
-           'COMPLETED', $15::timestamp, NOW()
+           $6, $7, $8, $9, $10, $11, $12,
+           $13, NULL, $14, $15,
+           'COMPLETED', $16::timestamp, NOW()
          ON CONFLICT (id) DO NOTHING
          RETURNING *
        ),
@@ -329,9 +340,9 @@ export async function POST(req: Request) {
            u."modifierDeltas", u."lineTotal", NULL, u.notes,
            u."recipeVersion", u."sortOrder"
          FROM UNNEST(
-           $16::text[], $17::text[], $18::text[], $19::numeric[],
-           $20::numeric[], $21::numeric[], $22::numeric[], $23::text[],
-           $24::int[], $25::int[]
+           $17::text[], $18::text[], $19::text[], $20::numeric[],
+           $21::numeric[], $22::numeric[], $23::numeric[], $24::text[],
+           $25::int[], $26::int[]
          ) AS u(
            id, "itemId", "itemNameSnapshot", qty, "unitPrice",
            "modifierDeltas", "lineTotal", notes, "recipeVersion", "sortOrder"
@@ -365,24 +376,25 @@ export async function POST(req: Request) {
         modeAtCreation,                      // $5
         user.id,                             // $6
         subtotal,                            // $7
-        taxTotal,                            // $8
-        discountTotal,                       // $9
-        deliveryFee,                         // $10
-        total,                               // $11
-        payload.tenderType,                  // $12
-        amountTendered,                      // $13
-        changeGiven,                         // $14
-        now,                                 // $15
-        lineIdsArr,                          // $16
-        lineItemIdsArr,                      // $17
-        lineItemNamesArr,                    // $18
-        lineQtysArr,                         // $19
-        lineUnitPricesArr,                   // $20
-        lineModDeltasArr,                    // $21
-        lineTotalsArr,                       // $22
-        lineNotesArr,                        // $23
-        lineRecipeVersionsArr,               // $24
-        lineSortOrdersArr,                   // $25
+        taxApplied,                          // $8
+        taxTotal,                            // $9
+        discountTotal,                       // $10
+        deliveryFee,                         // $11
+        total,                               // $12
+        payload.tenderType,                  // $13
+        amountTendered,                      // $14
+        changeGiven,                         // $15
+        now,                                 // $16
+        lineIdsArr,                          // $17
+        lineItemIdsArr,                      // $18
+        lineItemNamesArr,                    // $19
+        lineQtysArr,                         // $20
+        lineUnitPricesArr,                   // $21
+        lineModDeltasArr,                    // $22
+        lineTotalsArr,                       // $23
+        lineNotesArr,                        // $24
+        lineRecipeVersionsArr,               // $25
+        lineSortOrdersArr,                   // $26
       ]
     )) as Array<{ receiptNumber: string; was_inserted: boolean }>;
 
@@ -413,7 +425,7 @@ export async function POST(req: Request) {
         createdAt: now,
         cashierId: user.id,
         modeAtCreation,
-        subtotal, taxTotal, discountTotal, deliveryFee, total,
+        subtotal, taxApplied, taxTotal, discountTotal, deliveryFee, total,
         tenderType: payload.tenderType,
         amountTendered, changeGiven,
         lines: computedLines.map((l) => ({
