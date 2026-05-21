@@ -649,9 +649,15 @@ model SaleTransaction {
 
   subtotal       Decimal        @db.Decimal(14, 2)
   // Tax: applied opt-in per sale (cashier toggles on /pos). False = no tax line
-  // on the slip and taxTotal = 0. True = 5% of subtotal stored in taxTotal.
+  // on the slip and taxTotal = 0. True = 5% of (subtotal − discount) stored
+  // in taxTotal. Tax computed AFTER discount per owner spec 2026-05-21.
   taxApplied     Boolean        @default(false)
   taxTotal       Decimal        @db.Decimal(14, 2)       @default(0)
+  // Discount: cashier-entered percentage rate (0-100). 0 = no discount.
+  // discountPct is the rate as typed; discountTotal is the computed kyat amount.
+  // Persisting both lets reports answer "show sales with >20% discount" without
+  // back-computing the rate from amount + subtotal (which drifts due to rounding).
+  discountPct    Decimal        @db.Decimal(5, 2)        @default(0)
   discountTotal  Decimal        @db.Decimal(14, 2)       @default(0)
   deliveryFee    Decimal        @db.Decimal(14, 2)       @default(0)
   total          Decimal        @db.Decimal(14, 2)

@@ -28,8 +28,11 @@ export interface TransactionsSummary {
   saleCount: number;
   avgSale: number;
   voidCount: number;
-  taxTotal: number;          // SUM(taxTotal) for completed sales
-  deliveryFeeTotal: number;  // SUM(deliveryFee) for completed sales
+  taxTotal: number;            // SUM(taxTotal) for completed sales
+  discountTotal: number;       // SUM(discountTotal) — total kyats given away as discount
+  taxSlipCount: number;        // COUNT(* WHERE taxApplied = true) — sales where customer asked for a tax slip
+  discountedCount: number;     // COUNT(* WHERE discountTotal > 0) — sales that got any discount
+  deliveryFeeTotal: number;    // SUM(deliveryFee) for completed sales
 }
 
 export interface DailyRevenuePoint {
@@ -77,11 +80,14 @@ export interface SaleLineRow {
 }
 
 /** Slip-details detail: a sale row with its line items expanded. Adds the
- *  per-slip tax + delivery so the PDF can render a proper Subtotal · Tax ·
- *  Delivery · Total breakdown under each receipt header. */
+ *  per-slip tax + discount + delivery so the PDF can render a proper
+ *  Subtotal · Discount · Tax · Delivery · Total breakdown under each
+ *  receipt header. */
 export interface SaleWithLines extends SaleRow {
   lines: SaleLineRow[];
   taxTotal: number;
+  discountPct: number;
+  discountTotal: number;
   deliveryFee: number;
 }
 
@@ -110,15 +116,18 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
   const [summaryRows, dailyRows, topItems, tenderMix, modeMix, recentSales, slipLines] = await Promise.all([
     sql(
       `SELECT
-         COALESCE(SUM(total)       FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS revenue,
-         COALESCE(SUM("taxTotal")  FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS "taxTotal",
+         COALESCE(SUM(total)         FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS revenue,
+         COALESCE(SUM("taxTotal")    FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS "taxTotal",
+         COALESCE(SUM("discountTotal") FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS "discountTotal",
          COALESCE(SUM("deliveryFee") FILTER (WHERE status = 'COMPLETED'), 0)::float8 AS "deliveryFeeTotal",
-         COUNT(*) FILTER (WHERE status = 'COMPLETED')::int                          AS "saleCount",
-         COUNT(*) FILTER (WHERE status = 'VOIDED')::int                              AS "voidCount"
+         COUNT(*) FILTER (WHERE status = 'COMPLETED')::int                            AS "saleCount",
+         COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "taxApplied" = true)::int    AS "taxSlipCount",
+         COUNT(*) FILTER (WHERE status = 'COMPLETED' AND "discountTotal" > 0)::int    AS "discountedCount",
+         COUNT(*) FILTER (WHERE status = 'VOIDED')::int                                AS "voidCount"
        FROM sale_transactions
        WHERE "tenantId" = $1 AND "createdAt" >= ${fromExpr}`,
       [tenantId]
-    ) as unknown as Promise<Array<{ revenue: number; saleCount: number; voidCount: number; taxTotal: number; deliveryFeeTotal: number }>>,
+    ) as unknown as Promise<Array<{ revenue: number; saleCount: number; voidCount: number; taxTotal: number; discountTotal: number; taxSlipCount: number; discountedCount: number; deliveryFeeTotal: number }>>,
 
     sql(
       `WITH days AS (
@@ -182,18 +191,20 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
               st."receiptNumber",
               -- Hand back UTC ISO; client renders via Intl.DateTimeFormat()
               (st."createdAt" AT TIME ZONE 'UTC')::text AS "createdAtIso",
-              st.total::float8        AS total,
-              st."taxTotal"::float8   AS "taxTotal",
-              st."deliveryFee"::float8 AS "deliveryFee",
-              st."tenderType"::text   AS "tenderType",
-              st.status::text         AS status,
+              st.total::float8           AS total,
+              st."taxTotal"::float8      AS "taxTotal",
+              st."discountPct"::float8   AS "discountPct",
+              st."discountTotal"::float8 AS "discountTotal",
+              st."deliveryFee"::float8   AS "deliveryFee",
+              st."tenderType"::text      AS "tenderType",
+              st.status::text            AS status,
               (SELECT COUNT(*)::int FROM sale_lines WHERE "saleId" = st.id) AS "itemCount"
        FROM sale_transactions st
        WHERE st."tenantId" = $1 AND st."createdAt" >= ${fromExpr}
        ORDER BY st."createdAt" DESC
        LIMIT 200`,
       [tenantId]
-    ) as unknown as Promise<Array<SaleRow & { taxTotal: number; deliveryFee: number }>>,
+    ) as unknown as Promise<Array<SaleRow & { taxTotal: number; discountPct: number; discountTotal: number; deliveryFee: number }>>,
 
     // Line items for the most recent 50 completed sales — drives the
     // Slip Details PDF section. Capped at 50 to keep the PDF a sane size
@@ -233,10 +244,17 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
       ...s,
       lines: linesBySale.get(s.id) ?? [],
       taxTotal: s.taxTotal ?? 0,
+      discountPct: s.discountPct ?? 0,
+      discountTotal: s.discountTotal ?? 0,
       deliveryFee: s.deliveryFee ?? 0,
     }));
 
-  const s = summaryRows[0] ?? { revenue: 0, saleCount: 0, voidCount: 0, taxTotal: 0, deliveryFeeTotal: 0 };
+  const s = summaryRows[0] ?? {
+    revenue: 0, saleCount: 0, voidCount: 0,
+    taxTotal: 0, discountTotal: 0,
+    taxSlipCount: 0, discountedCount: 0,
+    deliveryFeeTotal: 0,
+  };
   return {
     summary: {
       revenue: s.revenue,
@@ -244,6 +262,9 @@ export async function getTransactionsReport(tenantId: string, period: ReportPeri
       voidCount: s.voidCount,
       avgSale: s.saleCount > 0 ? s.revenue / s.saleCount : 0,
       taxTotal: s.taxTotal,
+      discountTotal: s.discountTotal,
+      taxSlipCount: s.taxSlipCount,
+      discountedCount: s.discountedCount,
       deliveryFeeTotal: s.deliveryFeeTotal,
     },
     dailyRevenue: dailyRows,

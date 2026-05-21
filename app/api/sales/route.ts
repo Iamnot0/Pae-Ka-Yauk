@@ -40,7 +40,7 @@ import { sql } from '@/lib/neonHttp';
 import { recordSaleDeductions, type DeductSpec } from '@/lib/stock/ledger';
 import { getActiveRecipesForItems } from '@/lib/repos/recipes';
 import { computeDeductions, type SaleLineForBom, type RecipeForBom } from '@/lib/stock/bom';
-import { applyTaxIf } from '@/lib/config/tax';
+import { applyTaxIf, computeDiscount } from '@/lib/config/tax';
 import { ULID_REGEX } from '@/lib/client/ulid';
 import { getInventoryMode, shouldDeductRawMaterials, type InventoryMode } from '@/lib/featureMode';
 import type { Unit } from '@/lib/repos/materials';
@@ -61,11 +61,14 @@ const Schema = z.object({
   tenderType: z.enum(TENDER_TYPES),
   amountTendered: z.number().nonnegative().optional(),
   // Tax opt-in per sale. Cashier toggles on /pos; default false = no tax line
-  // on the slip and taxTotal=0. When true, server computes 5% of subtotal.
-  // Client-sent value is honored (server doesn't second-guess intent), but
-  // the *amount* is always recomputed server-side per Hard Rule #5.
+  // on the slip and taxTotal=0. When true, server computes 5% of taxable base
+  // (subtotal − discount). Client-sent flag is honored (server doesn't
+  // second-guess intent), but the *amount* is always recomputed server-side
+  // per Hard Rule #5.
   taxApplied: z.boolean().default(false),
-  discountTotal: z.number().nonnegative().default(0),
+  // Discount rate the cashier typed (0-100). Server computes discountTotal
+  // server-side per Hard Rule #5. The amount is never accepted from client.
+  discountPct: z.number().min(0).max(100).default(0),
   deliveryFee: z.number().nonnegative().default(0),
   notes: z.string().trim().max(500).optional(),
   lines: z.array(z.object({
@@ -140,14 +143,17 @@ export async function POST(req: Request) {
   const itemById = Object.fromEntries(items.map(i => [i.id, i]));
 
   // --- 2. Compute totals server-side ---
-  // Tax policy (owner-confirmed 2026-05-21): opt-in per sale. `taxApplied`
-  // comes from the cart; when true, 5% of subtotal is added; when false,
-  // taxTotal = 0 and the slip omits the Tax line. Per-line `lineTax` is a
-  // proportional slice kept for report accuracy (COGS/tax-owing breakdowns)
-  // and may differ from `taxTotal` by ≤1 MMK due to rounding. Authoritative
-  // number is `taxTotal`. `sellable_items.taxRate` remains intentionally
-  // ignored (kept for Phase 2 per-jurisdiction overrides).
+  // Tax policy (owner-confirmed 2026-05-21): opt-in per sale via `taxApplied`.
+  // Discount policy (owner-confirmed 2026-05-21): opt-in per sale, cashier-
+  // entered percentage applied to the WHOLE BILL BEFORE tax. The taxable
+  // base is (subtotal − discount), so tax follows the discount down.
+  // Per-line `lineTax` is computed on gross line subtotal (no proration of
+  // cart-level discount); the sum may differ from `taxTotal` by ≤1 MMK when
+  // discount is applied. Authoritative number is cart-level `taxTotal`.
+  // `sellable_items.taxRate` remains intentionally ignored (kept for Phase 2
+  // per-jurisdiction overrides).
   const taxApplied = payload.taxApplied;
+  const discountPct = payload.discountPct;
   let subtotal = 0;
   const linesPreTax = payload.lines.map((l) => {
     const item = itemById[l.itemId];
@@ -155,17 +161,18 @@ export async function POST(req: Request) {
     subtotal += lineBase;
     return { ...l, item, lineTotal: lineBase };
   });
-  const taxTotal = applyTaxIf(taxApplied, subtotal);
+  const discountTotal = computeDiscount(subtotal, discountPct);
+  const taxableBase = subtotal - discountTotal;
+  const taxTotal = applyTaxIf(taxApplied, taxableBase);
   const computedLines = linesPreTax.map((l) => ({
     ...l,
     lineTax: applyTaxIf(taxApplied, l.lineTotal),
   }));
 
-  const discountTotal = payload.discountTotal ?? 0;
   const deliveryFee = payload.deliveryFee ?? 0;
   // Delivery fee is added AFTER tax — it's a service charge, not a goods
   // sale, so we don't apply 5% VAT on top of it.
-  const total = subtotal - discountTotal + taxTotal + deliveryFee;
+  const total = taxableBase + taxTotal + deliveryFee;
   const amountTendered = payload.amountTendered ?? total;
   const changeGiven = Math.max(0, amountTendered - total);
 
@@ -315,7 +322,7 @@ export async function POST(req: Request) {
          INSERT INTO sale_transactions (
            id, "tenantId", "outletId", "shiftId", "deviceId", "receiptNumber",
            "modeAtCreation",
-           "cashierId", subtotal, "taxApplied", "taxTotal", "discountTotal", "deliveryFee", total,
+           "cashierId", subtotal, "taxApplied", "taxTotal", "discountPct", "discountTotal", "deliveryFee", total,
            "tenderType", "tenderDetails", "amountTendered", "changeGiven",
            status, "createdAt", "serverReceivedAt"
          )
@@ -323,7 +330,7 @@ export async function POST(req: Request) {
            $1, $2, NULL, NULL, $3,
            COALESCE($4::text, (SELECT num FROM next_receipt)),
            $5,
-           $6, $7, $8, $9, $10, $11, $12,
+           $6, $7, $8, $9, $27, $10, $11, $12,
            $13, NULL, $14, $15,
            'COMPLETED', $16::timestamp, NOW()
          ON CONFLICT (id) DO NOTHING
@@ -395,6 +402,10 @@ export async function POST(req: Request) {
         lineNotesArr,                        // $24
         lineRecipeVersionsArr,               // $25
         lineSortOrdersArr,                   // $26
+        discountPct,                         // $27 (placed at end to avoid
+                                             //      renumbering line arrays;
+                                             //      column position is set by
+                                             //      the INSERT column list)
       ]
     )) as Array<{ receiptNumber: string; was_inserted: boolean }>;
 
@@ -425,7 +436,7 @@ export async function POST(req: Request) {
         createdAt: now,
         cashierId: user.id,
         modeAtCreation,
-        subtotal, taxApplied, taxTotal, discountTotal, deliveryFee, total,
+        subtotal, taxApplied, taxTotal, discountPct, discountTotal, deliveryFee, total,
         tenderType: payload.tenderType,
         amountTendered, changeGiven,
         lines: computedLines.map((l) => ({

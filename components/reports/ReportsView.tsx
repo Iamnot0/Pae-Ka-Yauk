@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { Download, FileText, TrendingUp, Package, AlertTriangle, Clock, ChevronDown, Receipt, Truck, CreditCard, Layers, ChefHat, ShoppingCart, ShieldAlert, Gift } from 'lucide-react';
+import { Download, FileText, TrendingUp, Package, AlertTriangle, Clock, ChevronDown, Receipt, Truck, CreditCard, Layers, ChefHat, ShoppingCart, ShieldAlert, Gift, Tag } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -454,12 +454,13 @@ function TransactionsSection({ tx, period }: { tx: TransactionsReport; period: R
 
       <KpiRow
         tiles={[
-          { icon: TrendingUp,    label: t('rpt.tx.revenue'),       value: <MMK amount={tx.summary.revenue} />,        tint: 'success' },
-          { icon: Receipt,       label: t('rpt.tx.saleCount'),     value: tx.summary.saleCount,                       tint: 'info' },
-          { icon: TrendingUp,    label: t('rpt.tx.avgSale'),       value: <MMK amount={tx.summary.avgSale} />,        tint: 'primary' },
-          { icon: ShieldAlert,   label: t('rpt.tx.taxTotal'),      value: <MMK amount={tx.summary.taxTotal} />,       tint: 'warning' },
-          { icon: Truck,         label: t('rpt.tx.deliveryTotal'), value: <MMK amount={tx.summary.deliveryFeeTotal} />, tint: 'info' },
-          { icon: AlertTriangle, label: t('rpt.tx.voidCount'),     value: tx.summary.voidCount,                       tint: 'destructive' },
+          { icon: TrendingUp,    label: t('rpt.tx.revenue'),         value: <MMK amount={tx.summary.revenue} />,          tint: 'success' },
+          { icon: Receipt,       label: t('rpt.tx.saleCount'),       value: tx.summary.saleCount,                         tint: 'info' },
+          { icon: TrendingUp,    label: t('rpt.tx.avgSale'),         value: <MMK amount={tx.summary.avgSale} />,          tint: 'primary' },
+          { icon: ShieldAlert,   label: t('rpt.tx.taxTotal'),        value: <MMK amount={tx.summary.taxTotal} />,         tint: 'warning', sublabel: `${tx.summary.taxSlipCount} slip(s)` },
+          { icon: Tag,           label: t('rpt.tx.discountTotal'),   value: <MMK amount={tx.summary.discountTotal} />,    tint: 'warning', sublabel: `${tx.summary.discountedCount} sale(s)` },
+          { icon: Truck,         label: t('rpt.tx.deliveryTotal'),   value: <MMK amount={tx.summary.deliveryFeeTotal} />, tint: 'info' },
+          { icon: AlertTriangle, label: t('rpt.tx.voidCount'),       value: tx.summary.voidCount,                         tint: 'destructive' },
         ]}
       />
 
@@ -951,7 +952,7 @@ function CollapsibleSection({
   );
 }
 
-function KpiRow({ tiles }: { tiles: Array<{ icon: typeof Download; label: string; value: React.ReactNode; tint: Tint }> }) {
+function KpiRow({ tiles }: { tiles: Array<{ icon: typeof Download; label: string; value: React.ReactNode; tint: Tint; sublabel?: string }> }) {
   return (
     <div style={{
       display: 'grid',
@@ -1029,7 +1030,7 @@ const TINT_FG: Record<Tint, string> = {
   primary:     'var(--color-primary)',
 };
 
-function KpiTile({ icon: Icon, label, value, tint }: { icon: typeof Download; label: string; value: React.ReactNode; tint: Tint }) {
+function KpiTile({ icon: Icon, label, value, tint, sublabel }: { icon: typeof Download; label: string; value: React.ReactNode; tint: Tint; sublabel?: string }) {
   // Vertical stack: icon / value / label. Same rhythm as the dashboard
   // KPIs so /reports + / dashboard read as one visual language. The
   // nowrap+ellipsis on value keeps "11,550 MMK" intact even on narrow
@@ -1077,6 +1078,18 @@ function KpiTile({ icon: Icon, label, value, tint }: { icon: typeof Download; la
       }}>
         {label}
       </div>
+      {sublabel && (
+        <div style={{
+          fontSize: '0.6875rem',
+          color: 'var(--color-muted-fg)',
+          opacity: 0.75,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          {sublabel}
+        </div>
+      )}
     </div>
   );
 }

@@ -84,10 +84,12 @@ export function generateReportsPdf(input: Input): void {
   y = kpiStrip(
     doc,
     [
-      ['Revenue', fmtMmk(tx.summary.revenue)],
-      ['Sales',   fmtInt(tx.summary.saleCount)],
+      ['Revenue',  fmtMmk(tx.summary.revenue)],
+      ['Sales',    fmtInt(tx.summary.saleCount)],
       ['Avg sale', fmtMmk(tx.summary.avgSale)],
-      ['Voids',   fmtInt(tx.summary.voidCount)],
+      ['Tax',      fmtMmk(tx.summary.taxTotal)],
+      ['Discount', fmtMmk(tx.summary.discountTotal)],
+      ['Voids',    fmtInt(tx.summary.voidCount)],
     ],
     y
   );

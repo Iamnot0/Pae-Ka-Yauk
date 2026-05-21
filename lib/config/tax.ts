@@ -34,3 +34,19 @@ export function computeTax(subtotal: number): number {
 export function applyTaxIf(taxApplied: boolean, subtotal: number): number {
   return taxApplied ? computeTax(subtotal) : 0;
 }
+
+/**
+ * Compute the cart-level discount amount from a percentage rate.
+ *
+ * Owner policy 2026-05-21: discount is opt-in per sale, cashier types the
+ * percentage each time, applied to the whole bill BEFORE tax. MMK is integer
+ * so the result is rounded to whole kyats.
+ *
+ * The percentage is clamped to [0, 100] defensively; the API also validates
+ * the range via Zod, but client-side math should never produce a negative
+ * discount or refund the customer more than they're paying.
+ */
+export function computeDiscount(subtotal: number, discountPct: number): number {
+  const pct = Math.max(0, Math.min(100, discountPct));
+  return Math.round((subtotal * pct) / 100);
+}

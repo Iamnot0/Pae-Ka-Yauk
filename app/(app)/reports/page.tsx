@@ -30,7 +30,7 @@ export default async function ReportsPage({
       // a full day. If the query throws, we want to know in Vercel logs.
       console.error('[reports] getTransactionsReport failed:', err);
       return {
-        summary: { revenue: 0, saleCount: 0, avgSale: 0, voidCount: 0, taxTotal: 0, deliveryFeeTotal: 0 },
+        summary: { revenue: 0, saleCount: 0, avgSale: 0, voidCount: 0, taxTotal: 0, discountTotal: 0, taxSlipCount: 0, discountedCount: 0, deliveryFeeTotal: 0 },
         dailyRevenue: [],
         topItems: [],
         tenderMix: [],

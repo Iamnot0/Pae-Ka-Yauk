@@ -38,7 +38,7 @@ import { useT } from '@/lib/i18n/useT';
 import { trBoth } from '@/lib/i18n/dict';
 import { MMK } from '@/components/i18n/MMK';
 import { renderReceiptCanvas } from '@/lib/printing/renderReceiptCanvas';
-import { applyTaxIf } from '@/lib/config/tax';
+import { applyTaxIf, computeDiscount } from '@/lib/config/tax';
 import { newId } from '@/lib/client/ulid';
 import { enqueueWrite, onOpDone } from '@/lib/client/outbox';
 // Scanner is mounted globally in app/(app)/layout.tsx → on scan, the user
@@ -83,6 +83,8 @@ interface SaleResponse {
     /** Whether the cashier opted-in to 5% tax for this sale. */
     taxApplied: boolean;
     taxTotal: number;
+    /** Discount rate (0-100) the cashier typed, or 0 if no discount. */
+    discountPct: number;
     discountTotal: number;
     deliveryFee: number;
     total: number;
@@ -120,11 +122,12 @@ export function PosScreen({ items }: Props) {
   // on the slip. Cashier toggles via the Tax button when a customer asks for
   // a tax receipt. Resets to false after each successful Pay (see clearCart).
   const [taxApplied, setTaxApplied] = useState(false);
-  // Discount opt-in per sale (owner pref 2026-05-21). UI-only for now;
-  // math + persistence wires up once owner finalizes the discount spec
-  // (fixed %, fixed MMK, per-line vs cart-level, etc).
-  // TODO(owner-spec): plumb discountAmount into total + payload + schema.
+  // Discount opt-in per sale (owner spec 2026-05-21): cashier types a
+  // percentage each click, applied to the whole bill BEFORE tax. The Dis
+  // chip toggles the input row open; the cashier then types the rate
+  // (0-100). Empty/zero rate = no discount even when toggled on.
   const [discountApplied, setDiscountApplied] = useState(false);
+  const [discountPct, setDiscountPct] = useState('');
   const [posCat, setPosCat] = useState<PosCatKey>('ALL');
 
   // Filter the items grid by the active quick-filter chip. ALL bypasses
@@ -144,14 +147,24 @@ export function PosScreen({ items }: Props) {
   const [receiptCart, setReceiptCart] = useState<CartLine[]>([]);
 
   const subtotal = useMemo(() => cart.reduce((s, l) => s + l.unitPrice * l.qty, 0), [cart]);
-  // Opt-in 5% policy — matches the server-side `applyTaxIf` in /api/sales.
-  // When taxApplied = false, taxTotal = 0 and the slip omits the Tax line.
-  // Per-item `taxRate` on CartLine is intentionally ignored under this policy.
-  const taxTotal = useMemo(() => applyTaxIf(taxApplied, subtotal), [taxApplied, subtotal]);
+  // Discount before tax (owner spec 2026-05-21). Empty pct OR Dis toggled
+  // off = 0 discount. Clamped server-side too; here we just don't propagate
+  // values outside [0, 100] into the math.
+  const discountPctNum = discountApplied
+    ? Math.max(0, Math.min(100, Number(discountPct) || 0))
+    : 0;
+  const discountTotal = useMemo(
+    () => computeDiscount(subtotal, discountPctNum),
+    [subtotal, discountPctNum]
+  );
+  // Tax computed on the DISCOUNTED subtotal — owner pref 2026-05-21.
+  // Same math in /api/sales (server is authoritative).
+  const taxableBase = subtotal - discountTotal;
+  const taxTotal = useMemo(() => applyTaxIf(taxApplied, taxableBase), [taxApplied, taxableBase]);
   // Delivery fee — added AFTER tax (service charge, not VAT-able). Matches
   // the same math in /api/sales so client + server agree.
   const deliveryNum = Math.max(0, Math.floor(Number(deliveryFee) || 0));
-  const total = subtotal + taxTotal + deliveryNum;
+  const total = taxableBase + taxTotal + deliveryNum;
   const cashNum = Number(cashTendered) || 0;
   const change = tender === 'CASH' ? Math.max(0, cashNum - total) : 0;
   const shortBy = tender === 'CASH' && cashNum < total ? total - cashNum : 0;
@@ -261,7 +274,8 @@ export function PosScreen({ items }: Props) {
 
   const clearCart = () => {
     setCart([]); setCashTendered(''); setDeliveryFee('');
-    setTaxApplied(false); setDiscountApplied(false); setError('');
+    setTaxApplied(false); setDiscountApplied(false); setDiscountPct('');
+    setError('');
   };
 
   const pay = async () => {
@@ -284,6 +298,7 @@ export function PosScreen({ items }: Props) {
         amountTendered: cashNum,
         deliveryFee: deliveryNum,
         taxApplied,
+        discountPct: discountPctNum,
         lines,
       };
 
@@ -301,7 +316,8 @@ export function PosScreen({ items }: Props) {
           subtotal,
           taxApplied,
           taxTotal,
-          discountTotal: 0,
+          discountPct: discountPctNum,
+          discountTotal,
           deliveryFee: deliveryNum,
           total,
           tenderType: tender,
@@ -315,6 +331,10 @@ export function PosScreen({ items }: Props) {
             unitPrice: l.unitPrice,
             taxRate: taxApplied ? 0.05 : 0,
             lineTotal: l.unitPrice * l.qty,
+            // Per-line tax kept on the gross line subtotal (no proration
+            // of the cart-level discount). Sum may differ from taxTotal
+            // by ≤1 MMK when discount is applied; cart-level taxTotal is
+            // the authoritative value for slip + reports.
             lineTax: applyTaxIf(taxApplied, l.unitPrice * l.qty),
           })),
         },
@@ -326,7 +346,7 @@ export function PosScreen({ items }: Props) {
       setReceiptCart(cart); // snapshot BEFORE clearing
       setReceipt(localReceipt);
       setCart([]); setCashTendered(''); setDeliveryFee('');
-      setTaxApplied(false); setDiscountApplied(false);
+      setTaxApplied(false); setDiscountApplied(false); setDiscountPct('');
       router.refresh();
     } catch (e) {
       setError((e as Error).message || 'Sale enqueue failed');
@@ -571,9 +591,16 @@ export function PosScreen({ items }: Props) {
         {cart.length > 0 && (
           <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 6 }}>
             <Row label={t('pos.subtotal')} value={<MMK amount={subtotal} />} />
+            {/* Discount line — shows rate + negative MMK so cashier + customer
+                can verify the bill arithmetic. Only renders when an actual
+                amount is applied (Dis toggled AND non-zero pct typed). */}
+            {discountTotal > 0 && (
+              <Row label={`${t('pos.discount')} (${discountPctNum}%)`} value={<MMK amount={-discountTotal} />} />
+            )}
             {/* Tax shows label only ("Tax (5%)") — owner brief 2026-04-28.
                 Customers see the rate, not a separate kyat figure; total
-                below already includes it (subtotal × 1.05 + delivery). */}
+                below already includes it (taxable base × 1.05 + delivery,
+                where taxable base = subtotal − discount). */}
             {taxTotal > 0 && <Row label={t('slip.tax')} value={null} />}
             {deliveryNum > 0 && <Row label={t('pos.delivery')} value={<MMK amount={deliveryNum} />} />}
             <Row label={t('common.total')} value={<MMK amount={total} />} big />
@@ -592,13 +619,44 @@ export function PosScreen({ items }: Props) {
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
               <TenderChip icon={<Banknote size={14} />}  label={t('pos.cashTender')}  active                    onClick={() => { /* only tender — kept as a status chip */ }} />
               <TenderChip icon={<Percent size={14} />}   label={t('pos.tax')}         active={taxApplied}       onClick={() => setTaxApplied((v) => !v)} />
-              <TenderChip icon={<Tag size={14} />}       label="Dis"                  active={discountApplied}  onClick={() => setDiscountApplied((v) => !v)} />
+              <TenderChip icon={<Tag size={14} />}       label="Dis"                  active={discountApplied}  onClick={() => {
+                setDiscountApplied((v) => {
+                  // Toggling off clears the pct so re-toggling on starts fresh
+                  // instead of silently reapplying a stale rate.
+                  if (v) setDiscountPct('');
+                  return !v;
+                });
+              }} />
               <DeliveryFeeCell
                 value={deliveryFee}
                 onChange={setDeliveryFee}
                 label={t('pos.delivery')}
               />
             </div>
+
+            {/* Discount % input row — appears when the Dis chip is toggled
+                on. Cashier types 0-100; out-of-range values clamp via
+                discountPctNum in the math layer above. */}
+            {discountApplied && (
+              <div>
+                <label htmlFor="pos-discount-pct" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Tag size={14} />
+                  {t('pos.discount')} (%)
+                </label>
+                <input
+                  id="pos-discount-pct"
+                  type="number"
+                  inputMode="numeric"
+                  step="1"
+                  min="0"
+                  max="100"
+                  value={discountPct}
+                  onChange={(e) => setDiscountPct(e.target.value)}
+                  placeholder="10"
+                  autoFocus
+                />
+              </div>
+            )}
 
             {tender === 'CASH' && (
               <div>
@@ -621,7 +679,6 @@ export function PosScreen({ items }: Props) {
                     }
                   }}
                   placeholder={total.toLocaleString()}
-                  autoFocus
                 />
               </div>
             )}
@@ -1019,11 +1076,20 @@ function ReceiptView({ receipt, cart, items, onClose, t }: {
         <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', fontSize: '0.8125rem' }}>
           <span style={{ color: 'var(--color-muted-fg)' }}>{t('pos.subtotal')}</span>
           <span className="tabular-nums" style={{ textAlign: 'right' }}><MMK amount={s.subtotal} /></span>
+          {s.discountTotal > 0 && (
+            <>
+              {/* Discount line shows rate + negative amount so the customer
+                  can verify the bill arithmetic line by line. */}
+              <span style={{ color: 'var(--color-muted-fg)' }}>{t('slip.discount')} ({s.discountPct}%)</span>
+              <span className="tabular-nums" style={{ textAlign: 'right' }}><MMK amount={-s.discountTotal} /></span>
+            </>
+          )}
           {s.taxTotal > 0 && (
             <>
-              {/* Slip shows "Tax (5%)" label only — no kyat figure. The
-                  total below is tax-inclusive so customers can verify by
-                  arithmetic. Same treatment on the printed slip. */}
+              {/* Slip shows "Tax (5%)" label only — no kyat figure. Total
+                  below is tax-inclusive (taxable base × 1.05 + delivery,
+                  where taxable base = subtotal − discount) so customers
+                  can verify by arithmetic. */}
               <span style={{ color: 'var(--color-muted-fg)' }}>{t('slip.tax')}</span>
               <span />
             </>

@@ -285,6 +285,7 @@ CREATE TABLE "sale_transactions" (
     "subtotal" DECIMAL(14,2) NOT NULL,
     "taxApplied" BOOLEAN NOT NULL DEFAULT false,
     "taxTotal" DECIMAL(14,2) NOT NULL DEFAULT 0,
+    "discountPct" DECIMAL(5,2) NOT NULL DEFAULT 0,
     "discountTotal" DECIMAL(14,2) NOT NULL DEFAULT 0,
     "total" DECIMAL(14,2) NOT NULL,
     "tenderType" "TenderType" NOT NULL,

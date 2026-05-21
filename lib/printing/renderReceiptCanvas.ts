@@ -29,6 +29,10 @@ export interface ReceiptMeta {
   createdAt: string;    // ISO
   subtotal: number;
   taxTotal: number;
+  /** Discount rate the cashier typed (0-100). 0 = no discount line on the slip. */
+  discountPct?: number;
+  /** Discount kyat amount. 0 = no discount line on the slip. */
+  discountTotal?: number;
   deliveryFee?: number;
   total: number;
   tenderType: string;   // 'CASH' | 'CARD' | 'MOBILE_MONEY' | 'BANK_TRANSFER'
@@ -215,11 +219,20 @@ export async function renderReceiptCanvas(input: RenderInput): Promise<RenderOut
   // Totals
   const mSub = input.tEnMy('slip.subtotal');
   y = twoColBilingual(mSub.en, mSub.my, fmtMoney(input.sale.subtotal), y);
+  if ((input.sale.discountTotal ?? 0) > 0) {
+    // Discount line shows rate + negative kyat amount so the customer can
+    // verify the bill line by line (owner spec 2026-05-21).
+    const mDis = input.tEnMy('slip.discount');
+    const pct = input.sale.discountPct ?? 0;
+    const amount = `-${fmtMoney(input.sale.discountTotal ?? 0)}`;
+    y = twoColBilingual(`${mDis.en} (${pct}%)`, `${mDis.my} (${pct}%)`, amount, y);
+  }
   if (input.sale.taxTotal > 0) {
     // Slip shows "Tax (5%)" label only — no kyat figure (owner brief
-    // 2026-04-28). Total below is tax-inclusive so customers can verify
-    // by arithmetic. Empty third arg → twoColBilingual prints just the
-    // bilingual label with no right-aligned amount column.
+    // 2026-04-28). Total below is tax-inclusive (taxable base × 1.05 +
+    // delivery, where taxable base = subtotal − discount) so customers
+    // can verify by arithmetic. Empty third arg → twoColBilingual prints
+    // just the bilingual label with no right-aligned amount column.
     const mTax = input.tEnMy('slip.tax');
     y = twoColBilingual(mTax.en, mTax.my, '', y);
   }
