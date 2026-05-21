@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Plus, Minus, Trash2, X, Receipt, Banknote, Printer, Lock, Truck, Percent } from 'lucide-react';
+import { Plus, Minus, Trash2, X, Receipt, Banknote, Printer, Lock, Truck, Percent, Tag } from 'lucide-react';
 import type { ItemCategory } from '@/lib/repos/items';
 import type { DictKey } from '@/lib/i18n/dict';
 
@@ -120,6 +120,11 @@ export function PosScreen({ items }: Props) {
   // on the slip. Cashier toggles via the Tax button when a customer asks for
   // a tax receipt. Resets to false after each successful Pay (see clearCart).
   const [taxApplied, setTaxApplied] = useState(false);
+  // Discount opt-in per sale (owner pref 2026-05-21). UI-only for now;
+  // math + persistence wires up once owner finalizes the discount spec
+  // (fixed %, fixed MMK, per-line vs cart-level, etc).
+  // TODO(owner-spec): plumb discountAmount into total + payload + schema.
+  const [discountApplied, setDiscountApplied] = useState(false);
   const [posCat, setPosCat] = useState<PosCatKey>('ALL');
 
   // Filter the items grid by the active quick-filter chip. ALL bypasses
@@ -255,7 +260,8 @@ export function PosScreen({ items }: Props) {
     setCart((prev) => prev.filter((l) => l.itemId !== itemId));
 
   const clearCart = () => {
-    setCart([]); setCashTendered(''); setDeliveryFee(''); setTaxApplied(false); setError('');
+    setCart([]); setCashTendered(''); setDeliveryFee('');
+    setTaxApplied(false); setDiscountApplied(false); setError('');
   };
 
   const pay = async () => {
@@ -319,7 +325,8 @@ export function PosScreen({ items }: Props) {
       await enqueueWrite('/api/sales', payload, { id: saleId });
       setReceiptCart(cart); // snapshot BEFORE clearing
       setReceipt(localReceipt);
-      setCart([]); setCashTendered(''); setDeliveryFee(''); setTaxApplied(false);
+      setCart([]); setCashTendered(''); setDeliveryFee('');
+      setTaxApplied(false); setDiscountApplied(false);
       router.refresh();
     } catch (e) {
       setError((e as Error).message || 'Sale enqueue failed');
@@ -573,17 +580,19 @@ export function PosScreen({ items }: Props) {
           </div>
         )}
 
-        {/* Cash chip + Tax toggle + Delivery fee input share one 3-column
-            row (owner brief 2026-05-21 — replaces the prior Cash + KBZ Pay
-            + Delivery layout). Cash is now informational (it's the only
-            tender method); Tax is the new opt-in 5% toggle. Cash tendered
-            input still lives alone on the row below so Enter-to-pay
-            remains the obvious action. */}
+        {/* Cash chip + Tax toggle + Discount toggle + Delivery fee input
+            share one 4-column row (owner brief 2026-05-21 — replaces the
+            prior Cash + KBZ Pay + Delivery layout, then split the Tax box
+            into Tax + Dis). Cash is informational (only tender method);
+            Tax is the opt-in 5% toggle; Dis is the discount toggle (math
+            pending owner spec). Cash tendered input lives alone on the
+            row below so Enter-to-pay remains the obvious action. */}
         {cart.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
-              <TenderChip icon={<Banknote size={14} />}  label={t('pos.cashTender')}  active                onClick={() => { /* only tender — kept as a status chip */ }} />
-              <TenderChip icon={<Percent size={14} />}   label={t('pos.tax')}  active={taxApplied}  onClick={() => setTaxApplied((v) => !v)} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
+              <TenderChip icon={<Banknote size={14} />}  label={t('pos.cashTender')}  active                    onClick={() => { /* only tender — kept as a status chip */ }} />
+              <TenderChip icon={<Percent size={14} />}   label={t('pos.tax')}         active={taxApplied}       onClick={() => setTaxApplied((v) => !v)} />
+              <TenderChip icon={<Tag size={14} />}       label="Dis"                  active={discountApplied}  onClick={() => setDiscountApplied((v) => !v)} />
               <DeliveryFeeCell
                 value={deliveryFee}
                 onChange={setDeliveryFee}
