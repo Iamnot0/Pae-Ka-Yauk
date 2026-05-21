@@ -583,7 +583,7 @@ export function PosScreen({ items }: Props) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr)', gap: 4 }}>
               <TenderChip icon={<Banknote size={14} />}  label={t('pos.cashTender')}  active                onClick={() => { /* only tender — kept as a status chip */ }} />
-              <TenderChip icon={<Percent size={14} />}   label={`${t('pos.tax')} 5%`}  active={taxApplied}  onClick={() => setTaxApplied((v) => !v)} />
+              <TenderChip icon={<Percent size={14} />}   label={t('pos.tax')}  active={taxApplied}  onClick={() => setTaxApplied((v) => !v)} />
               <DeliveryFeeCell
                 value={deliveryFee}
                 onChange={setDeliveryFee}
